@@ -4,7 +4,6 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.Comparator;
 import java.util.stream.Stream;
 
 /**
@@ -33,11 +32,10 @@ public final class AppInfo {
 
     /** 更名前（v3.0.x 及以前）的产品名与目录，仅用于一次性迁移与提示。 */
     private static final String LEGACY_HOME_DIR_NAME = ".github-agent";
-    private static final String LEGACY_JAR_NAME = "github-agent.jar";
     private static final String LEGACY_COMMAND = "github-agent";
 
     /** 兜底版本号；打包后优先从 jar 清单的 Implementation-Version 读取，避免与 pom 不一致。 */
-    private static final String FALLBACK_VERSION = "3.1.0";
+    private static final String FALLBACK_VERSION = "3.1.1";
 
     private AppInfo() {
     }
@@ -118,23 +116,22 @@ public final class AppInfo {
             if (!Files.exists(legacy) || legacy.equals(target)) {
                 return;
             }
+            // 只迁移用户数据，不迁移 bin/ 与 lib/：
+            // 旧启动器指向旧 jar 路径，复制过来会造成「命令存在但指向已删除的 jar」的坏状态。
+            String[] userData = {"config.properties", "trusted-dirs.json"};
+            boolean copiedAny = false;
             Files.createDirectories(target);
-            try (Stream<Path> walk = Files.walk(legacy)) {
-                walk.forEach(src -> {
-                    try {
-                        Path dst = target.resolve(legacy.relativize(src).toString());
-                        if (Files.isDirectory(src)) {
-                            Files.createDirectories(dst);
-                        } else {
-                            Files.copy(src, dst);
-                        }
-                    } catch (Exception ignored) {
-                    }
-                });
+            for (String name : userData) {
+                Path src = legacy.resolve(name);
+                if (Files.isRegularFile(src)) {
+                    Files.copy(src, target.resolve(name));
+                    copiedAny = true;
+                    TrustStore.restrictPermissions(target.resolve(name));
+                }
             }
-            // 旧 jar 文件名与新 jar 不同，迁移后删掉，避免占空间
-            Files.deleteIfExists(target.resolve("lib").resolve(LEGACY_JAR_NAME));
-            System.out.println("  ℹ 已从旧版目录迁移配置: " + legacy + " → " + target + "（旧目录可手动删除）");
+            if (copiedAny) {
+                System.out.println("  ℹ 已从旧版目录迁移配置: " + legacy + " → " + target + "（旧目录可手动删除）");
+            }
         } catch (Exception ignored) {
         }
     }
@@ -153,18 +150,6 @@ public final class AppInfo {
                     + "），可执行 `" + LEGACY_COMMAND + " --forget` 后手动删除该目录，避免两个命令并存。";
         } catch (Exception ignored) {
             return null;
-        }
-    }
-
-    /** 清空目录（仅用于安装脚本之外的内部清理场景）。 */
-    static void deleteRecursively(Path dir) throws IOException {
-        if (!Files.exists(dir)) {
-            return;
-        }
-        try (Stream<Path> walk = Files.walk(dir)) {
-            for (Path p : walk.sorted(Comparator.reverseOrder()).toList()) {
-                Files.deleteIfExists(p);
-            }
         }
     }
 }

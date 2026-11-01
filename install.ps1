@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-    Aether —— Windows 安装脚本 (v3.1.0)
+    Aether —— Windows 安装脚本 (v3.1.1)
 
 .DESCRIPTION
     安装后即可在任意目录（PowerShell / CMD / Windows Terminal）用一条命令启动：
@@ -50,7 +50,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-$ScriptVersion = '3.1.0'
+$ScriptVersion = '3.1.1'
 $Repo = '9178nekomc/aether'
 $ReleaseJarUrl = "https://github.com/$Repo/releases/latest/download/aether.jar"
 
