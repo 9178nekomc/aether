@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-    GitHub AI Agent Pro —— Windows 安装脚本 (v2.1.2)
+    GitHub AI Agent Pro —— Windows 安装脚本 (v2.1.3)
 
 .DESCRIPTION
     安装后即可在任意目录（PowerShell / CMD / Windows Terminal）用一条命令启动：
@@ -50,7 +50,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-$ScriptVersion = '2.1.2'
+$ScriptVersion = '2.1.3'
 $Repo = '9178nekomc/github-Agent'
 $ReleaseJarUrl = "https://github.com/$Repo/releases/latest/download/github-agent.jar"
 
@@ -274,7 +274,16 @@ if not exist "%JAR%" (
   echo     请重新运行安装脚本 install.ps1
   exit /b 127
 )
+rem 程序内部统一按 UTF-8 输出，而中文 Windows 控制台默认代码页是 936，
+rem 不切码页就会满屏乱码。退出时恢复原代码页，不污染调用方终端。
+set "GHA_OLDCP="
+for /f "tokens=2 delims=:" %%c in ('chcp 2^>nul') do set "GHA_OLDCP=%%c"
+if defined GHA_OLDCP set "GHA_OLDCP=%GHA_OLDCP: =%"
+if defined GHA_OLDCP chcp 65001 >nul 2>nul
 "%JAVA_BIN%" -jar "%JAR%" %*
+set "GHA_RC=%ERRORLEVEL%"
+if defined GHA_OLDCP chcp %GHA_OLDCP% >nul 2>nul
+exit /b %GHA_RC%
 "@
 
 # cmd 文件必须用系统 ANSI 编码写入，否则含中文路径时会被破坏
