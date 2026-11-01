@@ -17,23 +17,24 @@ import java.util.List;
 import java.util.Scanner;
 
 /**
- * GitHub AI Agent Pro v2.1 主程序入口（全局命令形态）。
+ * GitHub AI Agent v3.0 主程序入口（全局命令形态 + 极简 TUI 工作台）。
  *
- * v2.1 新增「安装即用」的命令行启动器，使用体验对齐 Claude Code CLI：
+ * 安装后即可像 `claude` 一样使用单命令启动：
  *
- *   $ github-agent                 # 在当前目录启动（自动询问是否允许访问该工作区）
+ *   $ github-agent                 # 在当前目录启动（首次会询问是否允许访问该工作区）
  *   $ github-agent ~/code/proj     # 在指定目录启动
- *   $ github-agent -p "写个脚本"    # 一次性任务模式
+ *   $ github-agent -p "写个脚本"    # 一次性任务模式，执行完退出
  *   $ github-agent --version / --help / --doctor / --config / --forget
  *
- * 启动流程：解析参数 → 加载全局配置（~/.github-agent）→ 工作区信任授权（首次）→
- * 首次运行向导（缺 API Key 时）→ 校验 GitHub Token → 进入 TUI 交互循环。
+ * 启动流程：解析参数 → 加载用户级配置（~/.github-agent）→ 工作区信任授权 →
+ * 首次配置向导（缺 API Key 时）→ 校验 GitHub Token → 进入 TUI 交互循环。
  *
- * 其他核心能力保持不变：
- * - 零外部 Git 依赖（内置 Eclipse JGit 纯 Java 引擎）
- * - 富色彩 TUI（5 套 TrueColor 主题、彩色 Unified Diff 预览、状态栏、动画加载器）
- * - 多步 ReAct 自主智能体（读文件、精准编辑、内置 Git、GitHub 全量 API）
- * - 三级风险审批门控（SAFE / STRICT / YOLO）
+ * v3.0 能力（与 v2.x 启动器层并存）：
+ * - 13 家内置模型供应商 + 4 大通信协议（openai-chat / openai-responses / anthropic-messages / gemini-native）
+ * - 树型结构展示每一步推理、工具调用、Token 消耗与 Prompt Cache 命中率
+ * - 会话自动保存与恢复（/sessions、/resume、--resume）
+ * - Skills 技能包与 MCP 扩展
+ * - 6 套极简主题（淡蓝/暖橙/翠绿 × 亮暗色）
  */
 public class Main {
 
@@ -61,8 +62,14 @@ public class Main {
             return;
         }
 
-        ConfigManager config = ConfigManager.load(opts);
-        config.setWorkspaceDir(workspace.toString());
+        ConfigManager config;
+        try {
+            config = ConfigManager.load(opts, workspace);
+        } catch (IOException e) {
+            System.err.println("✖ 读取配置失败: " + e.getMessage());
+            System.exit(3);
+            return;
+        }
         TuiTheme theme = TuiTheme.get(config.getTuiTheme());
         TuiRenderer tui = new TuiRenderer(theme);
 
@@ -72,8 +79,7 @@ public class Main {
         }
         if (opts.forget) {
             TrustStore store = new TrustStore();
-            boolean removed = store.revoke(workspace);
-            if (removed) {
+            if (store.revoke(workspace)) {
                 tui.printSuccess("已撤销该目录的信任记录: " + workspace);
                 tui.printInfo("下次在此目录启动时会重新询问是否允许访问。");
             } else {
@@ -104,22 +110,29 @@ public class Main {
                 config.setAllowOutsideWorkspace(true);
             }
 
-            // ---- 2. 首次运行向导（仅在缺少 API Key 时触发） ----
+            // ---- 2. 首次配置向导（仅在缺少 API Key 时触发） ----
+            boolean configured;
             try {
-                config.ensureConfigured(scanner);
+                configured = config.ensureConfigured(scanner);
             } catch (IOException e) {
                 tui.printError("配置保存失败: " + e.getMessage());
+                configured = false;
             }
-            if (config.getOpenaiKey() == null || config.getOpenaiKey().isBlank()) {
+            if (!configured) {
                 tui.printError("未配置 AI API Key，无法启动。");
-                tui.printInfo("请重新运行 `" + AppInfo.COMMAND + "` 完成首次向导，或设置环境变量 OPENAI_API_KEY，");
+                tui.printInfo("请重新运行 `" + AppInfo.COMMAND + "` 完成首次向导，或设置对应供应商的环境变量，");
                 tui.printInfo("也可直接编辑配置文件: " + config.getConfigPath());
                 System.exit(3);
                 return;
             }
 
             // ---- 3. 组装各组件 ----
-            AIClient aiClient = new AIClient(config.getOpenaiEndpoint(), config.getOpenaiKey(), config.getOpenaiModel());
+            AIClient aiClient = new AIClient(
+                    config.getOpenaiEndpoint(),
+                    config.getOpenaiKey(),
+                    config.getOpenaiModel(),
+                    config.getProtocol()
+            );
             GitOperations gitOps = new GitOperations();
 
             String login = detectLogin(config, githubClient, tui, false);
@@ -132,9 +145,13 @@ public class Main {
             ProjectGenerator projectGenerator = new ProjectGenerator(aiClient);
             GitHubActions actions = new GitHubActions(githubClient, gitOps, projectGenerator, login, config.getWorkspaceDir());
             PermissionGate permissionGate = new PermissionGate(config, tui, scanner);
+            SkillManager skillManager = new SkillManager("skills");
+            McpClientManager mcpManager = new McpClientManager("mcp.json");
+            SessionManager sessionManager = new SessionManager(".agent-sessions");
 
             AgentLoop agentLoop = new AgentLoop(
-                    config, aiClient, githubClient, gitOps, actions, fsTools, tui, permissionGate, login
+                    config, aiClient, githubClient, gitOps, actions, fsTools, tui,
+                    permissionGate, skillManager, mcpManager, sessionManager, scanner, login
             );
 
             // ---- 4. 一次性任务模式（-p / --print）：执行完直接退出 ----
@@ -143,16 +160,29 @@ public class Main {
                     tui.printInfo("一次性任务模式：写入类操作仍会逐次询问确认（如需全自动请加 --mode yolo）。");
                 }
                 agentLoop.handle(opts.prompt);
+                try {
+                    sessionManager.saveProgress(config, aiClient, agentLoop.getTurnCount(), List.of());
+                } catch (Exception ignored) {
+                }
                 return;
             }
 
             // ---- 5. 交互式 TUI 主循环 ----
-            tui.printWelcomeBanner(config, login, gitOps.getQuickStatusBadge(workspaceFile));
+            tui.printWelcomeBanner(
+                    config, login, gitOps.getQuickStatusBadge(workspaceFile),
+                    skillManager.getAllSkills().size(), mcpManager.getServers().size(),
+                    sessionManager.getCurrentSessionId()
+            );
 
-            while (true) {
+            // 若启动参数指定了 --resume，自动恢复上次对话
+            if (!config.getResumeSessionArg().isBlank()) {
+                agentLoop.restoreSessionBySelector(config.getResumeSessionArg());
+            }
+
+            while (!agentLoop.isExitRequested()) {
                 File currentWs = new File(config.getWorkspaceDir()).getAbsoluteFile();
                 String gitBadge = gitOps.getQuickStatusBadge(currentWs);
-                tui.printStatusBar(config, gitBadge, agentLoop.getTurnCount(), aiClient.getTotalEstimatedTokens());
+                tui.printStatusBar(config, gitBadge, agentLoop.getTurnCount(), aiClient, sessionManager.getCurrentSessionId());
                 tui.printPrompt(config.isYoloMode());
 
                 if (!scanner.hasNextLine()) {
@@ -164,7 +194,8 @@ public class Main {
                 }
                 if (input.equals("退出") || input.equalsIgnoreCase("exit") || input.equalsIgnoreCase("quit")
                         || input.equalsIgnoreCase("/exit") || input.equalsIgnoreCase("/quit")) {
-                    tui.printInfo("👋 感谢使用 " + AppInfo.fullTitle() + "，再见！");
+                    sessionManager.saveProgress(config, aiClient, agentLoop.getTurnCount(), List.of());
+                    tui.printInfo("👋 会话进度已保存 (" + sessionManager.getCurrentSessionId() + ")，再见！");
                     break;
                 }
                 agentLoop.handle(input);
@@ -219,9 +250,10 @@ public class Main {
         lines.add("程序版本          = " + AppInfo.fullTitle());
         lines.add("配置文件          = " + config.getConfigPath());
         lines.add("工作区(本次)      = " + workspace);
-        lines.add("工作区覆盖项      = " + (config.getWorkspaceOverride().isBlank() ? "(空 → 始终使用启动目录)" : config.getWorkspaceOverride()));
         lines.add("信任记录          = " + (entry == null ? "未授权" : "已授权 " + entry.trustedAt + " (mode=" + entry.mode + ")"));
         lines.add("");
+        lines.add("ai.provider       = " + config.getProviderId());
+        lines.add("ai.protocol       = " + config.getProtocol());
         lines.add("openai.endpoint   = " + config.getOpenaiEndpoint());
         lines.add("openai.model      = " + config.getOpenaiModel());
         lines.add("openai.key        = " + mask(config.getOpenaiKey()));

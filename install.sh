@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-#  GitHub AI Agent Pro —— macOS / Linux 安装脚本 (v2.1.3)
+#  GitHub AI Agent —— macOS / Linux 安装脚本 (v3.0.0)
 #
 #  安装后即可在任意目录用一条命令启动：
 #     github-agent            # 在当前目录启动（首次会询问是否允许访问该工作区）
@@ -22,7 +22,7 @@
 # ==============================================================================
 set -euo pipefail
 
-VERSION="2.1.3"
+VERSION="3.0.0"
 REPO="9178nekomc/github-Agent"
 ROOT="${GITHUB_AGENT_HOME:-$HOME/.github-agent}"
 BIN_DIR="${GITHUB_AGENT_BIN:-$HOME/.local/bin}"
@@ -63,7 +63,7 @@ done
 
 # ---------------------------------------------------------------- 卸载
 if [ "$UNINSTALL" = "1" ]; then
-  printf '\n%s\n' "${BOLD}卸载 GitHub AI Agent Pro${RESET}"
+  printf '\n%s\n' "${BOLD}卸载 GitHub AI Agent${RESET}"
   for f in "$BIN_DIR/github-agent" "$BIN_DIR/gha"; do
     if [ -e "$f" ] || [ -L "$f" ]; then rm -f "$f"; ok "已移除 $f"; fi
   done
@@ -87,9 +87,9 @@ if [ "$UNINSTALL" = "1" ]; then
 fi
 
 # ---------------------------------------------------------------- 环境检查
-printf '\n%s\n' "${BOLD}${CYAN}╭──────────────────────────────────────────────╮${RESET}"
-printf '%s\n'  "${BOLD}${CYAN}│  GitHub AI Agent Pro · 安装程序 v${VERSION}       │${RESET}"
-printf '%s\n'  "${BOLD}${CYAN}╰──────────────────────────────────────────────╯${RESET}"
+printf '\n%s\n' "${BOLD}${CYAN}================================================================${RESET}"
+printf '%s\n'  "${BOLD}${CYAN}   GitHub AI Agent  ·  安装程序  v${VERSION}${RESET}"
+printf '%s\n'  "${BOLD}${CYAN}================================================================${RESET}"
 
 if ! command -v java >/dev/null 2>&1; then
   die "未找到 java 命令。请先安装 JDK/JRE 21+：https://adoptium.net/"

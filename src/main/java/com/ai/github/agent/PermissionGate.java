@@ -7,21 +7,7 @@ import java.util.Scanner;
 import java.util.Set;
 
 /**
- * 安全权限门控与 YOLO 模式控制器（Human-in-the-Loop Approval Gate）。
- *
- * 支持三级操作风险分类：
- * 1. READ_ONLY   - 只读操作（如 read_file, list_dir, search_files, git status/diff/log, GitHub 搜索/查看）：
- *                  默认自动放行（也可通过配置设为每次询问）。
- * 2. MUTATING    - 写入/变更操作（如 write_file, edit_file, git add/commit/checkout/push, 创建仓库/Issue/PR/Star）：
- *                  非 YOLO 模式下会弹出彩色预览卡片（含文件 Diff 对比），询问用户是否允许执行。
- * 3. DESTRUCTIVE - 高危/破坏性操作（如 delete_file, gh_delete_repo, git reset --hard, run_shell）：
- *                  使用红色高亮警告面板提示风险。
- *
- * 用户在确认提示中可选择：
- *   [y / Enter] 允许本次操作
- *   [n]         拒绝执行，并可输入反馈意见让 Agent 调整方案
- *   [a]         本次会话内自动允许该工具（Always allow this tool in session）
- *   [!]         立即开启 ⚡ YOLO 模式（后续所有操作全自动免确认执行）
+ * 安全权限门控与 YOLO 模式控制器（PermissionGate v3.0）。
  */
 public class PermissionGate {
 
@@ -45,7 +31,7 @@ public class PermissionGate {
         }
 
         public static Decision deny(String reason) {
-            return new Decision(false, reason == null || reason.isBlank() ? "用户拒绝了该操作。" : reason);
+            return new Decision(false, reason == null || reason.isBlank() ? "User rejected this operation." : reason);
         }
     }
 
@@ -66,8 +52,9 @@ public class PermissionGate {
         }
         return switch (toolName) {
             case "read_file", "list_dir", "search_files",
+                 "list_skills", "load_skill", "mcp_list_tools",
                  "gh_search_repos", "gh_browse_trending", "gh_get_repo",
-                 "gh_get_readme", "gh_get_file", "gh_list_user_repos",
+                 "gh_get_readme", "gh_get_remote_file", "gh_list_user_repos",
                  "gh_list_issues", "gh_list_prs", "gh_search_code", "gh_user_profile" -> RiskLevel.READ_ONLY;
             case "git_command" -> classifyGitSubcommandRisk(rawArgsSummary);
             case "delete_file", "gh_delete_repo", "run_shell" -> RiskLevel.DESTRUCTIVE;
@@ -84,7 +71,7 @@ public class PermissionGate {
             lower = lower.substring(4).trim();
         }
         if (lower.startsWith("status") || lower.startsWith("diff") || lower.startsWith("log")
-                || lower.startsWith("show") || lower.startsWith("branch") && (lower.equals("branch") || lower.contains("-a") || lower.contains("-l"))
+                || lower.startsWith("show") || (lower.startsWith("branch") && (lower.equals("branch") || lower.contains("-a") || lower.contains("-l")))
                 || lower.startsWith("remote -v") || lower.equals("remote") || lower.startsWith("tag -l") || lower.equals("tag")) {
             return RiskLevel.READ_ONLY;
         }
@@ -94,86 +81,79 @@ public class PermissionGate {
         return RiskLevel.MUTATING;
     }
 
-    /**
-     * 检查并询问用户是否批准执行指定工具调用。
-     */
     public Decision checkPermission(String toolName, String actionDescription, RiskLevel risk) {
         TuiTheme theme = tui.getTheme();
 
-        // 1. 只读操作且开启了自动放行只读工具
-        if (risk == RiskLevel.READ_ONLY && config.isAutoApproveRead()) {
+        // STRICT 模式：连只读工具也逐次确认（对标启动器层的 strict 语义）
+        boolean strict = config.getPermissionMode() == TrustStore.PermissionMode.STRICT;
+        if (risk == RiskLevel.READ_ONLY && config.isAutoApproveRead() && !strict) {
             return Decision.allow();
         }
 
-        // 2. YOLO 模式开启时：除了极端破坏性黑名单外全部自动放行
         if (config.isYoloMode()) {
             if (isCatastrophicCommand(toolName, actionDescription) && !config.isAllowCatastrophicInYolo()) {
-                tui.printWarning("⚡ YOLO 模式安全护栏触发：检测到高危破坏性指令，仍需人工确认！");
+                tui.printWarning("⚡ YOLO 安全护栏触发：检测到高危指令，需人工确认！");
             } else {
-                System.out.println(theme.warning + "  ⚡ [YOLO 自动批准] " + TuiTheme.RESET
-                        + theme.accent + toolName + TuiTheme.RESET + theme.muted + " -> " + actionDescription + TuiTheme.RESET);
+                System.out.println(theme.primary + "│     " + theme.warning + "⚡ [YOLO Auto-Approved] "
+                        + TuiTheme.RESET + theme.accent + toolName + TuiTheme.RESET);
                 return Decision.allow();
             }
         }
 
-        // 3. 当前会话已添加到白名单的工具
         if (sessionAllowedTools.contains(toolName) && risk != RiskLevel.DESTRUCTIVE) {
-            System.out.println(theme.info + "  ✔ [会话白名单自动批准] " + TuiTheme.RESET + theme.accent + toolName + TuiTheme.RESET);
+            System.out.println(theme.primary + "│     " + theme.info + "✔ [Session Allowlist] "
+                    + TuiTheme.RESET + theme.accent + toolName + TuiTheme.RESET);
             return Decision.allow();
         }
 
-        // 4. 弹出交互式 TUI 审批面板
         List<String> lines = new ArrayList<>();
         String levelBadge = switch (risk) {
-            case READ_ONLY -> theme.info + "🟢 只读查询 (READ_ONLY)" + TuiTheme.RESET;
-            case MUTATING -> theme.warning + "🟡 状态变更/写入 (MUTATING)" + TuiTheme.RESET;
-            case DESTRUCTIVE -> theme.danger + TuiTheme.BOLD + "🔴 高危/破坏性操作 (DESTRUCTIVE)" + TuiTheme.RESET;
+            case READ_ONLY -> theme.info + "READ_ONLY" + TuiTheme.RESET;
+            case MUTATING -> theme.warning + "WRITE / MUTATE" + TuiTheme.RESET;
+            case DESTRUCTIVE -> theme.danger + TuiTheme.BOLD + "HIGH-RISK / DESTRUCTIVE" + TuiTheme.RESET;
         };
 
-        lines.add(theme.accent + "请求工具 : " + TuiTheme.RESET + TuiTheme.BOLD + toolName + TuiTheme.RESET + "   (" + levelBadge + ")");
-        lines.add(theme.accent + "操作详情 : " + TuiTheme.RESET + theme.text + actionDescription + TuiTheme.RESET);
+        lines.add(theme.primary + "请求工具 : " + TuiTheme.RESET + TuiTheme.BOLD + toolName + TuiTheme.RESET + "  [" + levelBadge + "]");
+        lines.add(theme.primary + "操作摘要 : " + TuiTheme.RESET + theme.text + actionDescription + TuiTheme.RESET);
         lines.add("");
         lines.add(theme.success + "[Y/回车]" + theme.text + " 允许执行   "
                 + theme.danger + "[N]" + theme.text + " 拒绝并指导AI   "
-                + theme.info + "[A]" + theme.text + " 本次会话始终允许此工具   "
+                + theme.info + "[A]" + theme.text + " 本次会话始终允许该工具   "
                 + theme.warning + "[!]" + theme.text + " 开启⚡YOLO模式" + TuiTheme.RESET);
 
-        String borderColor = (risk == RiskLevel.DESTRUCTIVE) ? theme.danger : theme.warning;
-        tui.printBox("🛡️ 操作执行前安全确认 (HUMAN-IN-THE-LOOP APPROVAL)", lines, borderColor);
+        String borderColor = (risk == RiskLevel.DESTRUCTIVE) ? theme.danger : theme.primary;
+        tui.printBox("🛡️ 操作执行前确认 (APPROVAL REQUIRED)", lines, borderColor);
 
-        System.out.print(borderColor + "  ❓ 请选择 [Y/n/a/!]: " + TuiTheme.RESET);
+        System.out.print(borderColor + "  ❓ 请确认 [Y/n/a/!]: " + TuiTheme.RESET);
         System.out.flush();
 
         if (!scanner.hasNextLine()) {
-            return Decision.deny("终端输入流已关闭");
+            return Decision.deny("Input stream closed");
         }
         String answer = scanner.nextLine().trim();
 
         if (answer.isEmpty() || answer.equalsIgnoreCase("y") || answer.equalsIgnoreCase("yes") || answer.equals("允许")) {
-            tui.printSuccess("已批准执行 " + toolName);
             return Decision.allow();
         }
 
         if (answer.equals("!")) {
             config.setYoloMode(true);
-            tui.printWarning("⚡ 已开启 YOLO 模式！后续所有文件读写、Git提交与GitHub操作将全自动执行（输入 /yolo 可随时关闭）。");
+            tui.printWarning("⚡ 已开启 YOLO 全自动模式！后续操作将免确认自动执行（输入 /yolo 可随时切换）。");
             return Decision.allow();
         }
 
         if (answer.equalsIgnoreCase("a") || answer.equalsIgnoreCase("always")) {
             sessionAllowedTools.add(toolName);
-            tui.printInfo("已将工具 `" + toolName + "` 加入本次会话白名单。");
+            tui.printInfo("已将 `" + toolName + "` 加入本次会话白名单。");
             return Decision.allow();
         }
 
-        // 用户拒绝执行，允许补充拒绝原因或修改建议
-        System.out.print(theme.muted + "  💬 (可选) 告诉 AI 拒绝原因或替代方案 (直接回车跳过): " + TuiTheme.RESET);
+        System.out.print(theme.muted + "  💬 (可选) 输入修改意见或拒绝原因 (直接回车跳过): " + TuiTheme.RESET);
         System.out.flush();
         String feedback = scanner.hasNextLine() ? scanner.nextLine().trim() : "";
         String reason = feedback.isEmpty()
-                ? "用户拒绝了工具 `" + toolName + "` 的执行请求。"
-                : "用户拒绝了该操作，并给出指示: " + feedback;
-        tui.printWarning("已取消执行 " + toolName);
+                ? "User rejected execution of `" + toolName + "`."
+                : "User rejected `" + toolName + "` with instructions: " + feedback;
         return Decision.deny(reason);
     }
 

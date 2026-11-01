@@ -6,7 +6,7 @@ import java.nio.file.Paths;
 /**
  * 应用级常量与路径解析（AppInfo）。
  *
- * GitHub AI Agent Pro v2.1 起改为「全局命令 + 用户级配置」形态，对标 Claude Code CLI：
+ * 自 v2.1 起采用「全局命令 + 用户级配置」形态（v3.0 沿用），对标 Claude Code CLI：
  * - 安装后任意目录下直接输入 `github-agent`（或短别名 `gha`）即可启动；
  * - 配置与信任记录不再散落在当前目录，而是统一存放于用户主目录：
  *
@@ -19,13 +19,13 @@ import java.nio.file.Paths;
  */
 public final class AppInfo {
 
-    public static final String APP_NAME = "GitHub AI Agent Pro";
-    public static final String CODENAME = "Sentinel";
+    public static final String APP_NAME = "GitHub AI Agent";
+    public static final String CODENAME = "Minimalist";
     public static final String COMMAND = "github-agent";
     public static final String SHORT_COMMAND = "gha";
 
     /** 兜底版本号；打包后优先从 jar 清单的 Implementation-Version 读取，避免与 pom 不一致。 */
-    private static final String FALLBACK_VERSION = "2.1.3";
+    private static final String FALLBACK_VERSION = "3.0.0";
 
     private AppInfo() {
     }

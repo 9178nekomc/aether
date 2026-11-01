@@ -6,7 +6,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 命令行参数解析器（CliOptions v2.1）。
+ * 命令行参数解析器（CliOptions v3.0）。
  *
  * 安装后即可像 `claude` 一样使用单命令启动：
  *
@@ -27,6 +27,12 @@ public class CliOptions {
     public String prompt;
     public String theme;
     public String model;
+    /** AI 供应商 ID（v3.0 新增，对应 ProviderRegistry）。 */
+    public String provider;
+    /** 通信协议（v3.0 新增：openai-chat / openai-responses / anthropic-messages / gemini-native）。 */
+    public String protocol;
+    /** 恢复历史会话（v3.0 新增，--resume [sessionId]）。 */
+    public String resume;
     /** 权限模式：safe / strict / yolo（null = 未指定，沿用已保存设置）。 */
     public String mode;
     /** 三个互斥的简易开关解析结果。 */
@@ -93,6 +99,27 @@ public class CliOptions {
                         o.model = args[++i];
                     } else {
                         o.warnings.add("--model 缺少取值");
+                    }
+                }
+                case "--provider" -> {
+                    if (i + 1 < args.length) {
+                        o.provider = args[++i];
+                    } else {
+                        o.warnings.add("--provider 缺少取值");
+                    }
+                }
+                case "--protocol" -> {
+                    if (i + 1 < args.length) {
+                        o.protocol = args[++i];
+                    } else {
+                        o.warnings.add("--protocol 缺少取值");
+                    }
+                }
+                case "--resume" -> {
+                    if (i + 1 < args.length && !args[i + 1].startsWith("-")) {
+                        o.resume = args[++i];
+                    } else {
+                        o.resume = "latest";
                     }
                 }
                 case "--workspace", "--dir", "-C" -> {
@@ -191,8 +218,11 @@ public class CliOptions {
                   -p, --print <任务>        一次性执行任务后退出（CI/脚本友好）
                       --mode <模式>         权限模式: safe(推荐) | strict | yolo
                       --workspace, -C <目录> 指定工作区（等同于位置参数）
-                      --theme <名称>        TUI 主题: claude | cyberpunk | codex | dracula | nord
+                      --theme <名称>        TUI 主题: sky-dark(默认) | sky-light | amber-dark | amber-light | emerald-dark | emerald-light
                       --model <名称>        覆盖本次会话使用的模型
+                      --provider <ID>       AI 供应商: deepseek | openai | anthropic | gemini | dashscope | siliconflow | zhipu | moonshot | ark | openrouter | xai | ollama | custom
+                      --protocol <名称>     通信协议: openai-chat | openai-responses | anthropic-messages | gemini-native
+                      --resume [会话ID]     恢复历史会话（默认 latest）
                       --trust, -y           跳过信任询问，直接记住当前目录
                       --forget              撤销当前目录的信任记录并退出
                       --allow-outside       允许读写工作区之外的路径（默认阻止）

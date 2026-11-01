@@ -12,16 +12,20 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Scanner;
 import java.util.concurrent.TimeUnit;
 
 /**
- * 核心 ReAct 多步自主推理与工具调度主循环（AgentLoop v2.0）。
+ * 核心 ReAct 树型执行主循环与交互式 `/` 命令中心（AgentLoop v3.0）。
  *
- * 对标 Claude Code / OpenAI Codex CLI 架构：
- * 1. 支持多步自主工具调用链（Explore -> Read -> Plan -> Edit with Diff Preview -> Built-in Git -> GitHub API）。
- * 2. 集成 PermissionGate：在 SAFE 模式下对任何写入/修改操作展示彩色 Diff 预览并询问用户确认；在 ⚡ YOLO 模式下全自动连续执行。
- * 3. 内置丰富的斜杠命令系统（/help, /yolo, /theme, /model, /git, /tree, /status, /config, /prompt, /memory, /compact, /clear, /doctor）。
+ * 核心升级：
+ * 1. 树型操作轨迹（Tree View Execution Trace）：每一步推理与每一个工具调用均以清晰的树状结构展示，
+ *    实时打印该步的输入 Token、缓存命中 Token 与命中率（Cache Hit %）、输出 Token 以及耗时。
+ * 2. 自动保存与一键恢复（Session Persistence）：每步完成后自动持久化至 `.agent-sessions/`，支持 `/resume` 或 `/sessions` 恢复任意历史对话。
+ * 3. 原生支持 Skills 技能包与 MCP (Model Context Protocol) 扩展服务。
+ * 4. 输入 `/` 直接呼出清屏式交互命令面板（换主题、换供应商/协议/模型、查 Skill、查 MCP、恢复会话、退出等）。
  */
 public class AgentLoop {
 
@@ -33,11 +37,16 @@ public class AgentLoop {
     private final FileSystemTools fsTools;
     private final TuiRenderer tui;
     private final PermissionGate permissionGate;
+    private final SkillManager skillManager;
+    private final McpClientManager mcpManager;
+    private final SessionManager sessionManager;
+    private final Scanner scanner;
     private final ObjectMapper mapper = new ObjectMapper();
 
     private final List<AIClient.ChatMessage> history = new ArrayList<>();
     private String githubLogin;
     private int turnCount = 0;
+    private boolean exitRequested = false;
 
     public AgentLoop(ConfigManager config,
                      AIClient aiClient,
@@ -47,6 +56,10 @@ public class AgentLoop {
                      FileSystemTools fsTools,
                      TuiRenderer tui,
                      PermissionGate permissionGate,
+                     SkillManager skillManager,
+                     McpClientManager mcpManager,
+                     SessionManager sessionManager,
+                     Scanner scanner,
                      String githubLogin) {
         this.config = config;
         this.aiClient = aiClient;
@@ -56,6 +69,10 @@ public class AgentLoop {
         this.fsTools = fsTools;
         this.tui = tui;
         this.permissionGate = permissionGate;
+        this.skillManager = skillManager;
+        this.mcpManager = mcpManager;
+        this.sessionManager = sessionManager;
+        this.scanner = scanner;
         this.githubLogin = githubLogin;
     }
 
@@ -63,22 +80,45 @@ public class AgentLoop {
         return turnCount;
     }
 
+    public boolean isExitRequested() {
+        return exitRequested;
+    }
+
+    public void restoreSessionBySelector(String selector) {
+        try {
+            SessionManager.RestoredSession rs = sessionManager.loadSession(selector);
+            this.history.clear();
+            this.history.addAll(rs.messages);
+            this.turnCount = rs.turnCount;
+            this.aiClient.restoreTokenStats(rs.inputTokens, rs.outputTokens, rs.cacheHitTokens);
+            tui.printSuccess("已恢复历史会话 [" + rs.sessionId + "] \"" + rs.title + "\" (共 " + rs.turnCount + " 轮, 历史消息 " + rs.messages.size() + " 条)");
+            if (!rs.treeLogSummary.isEmpty()) {
+                tui.printBox("🌳 已恢复会话的历史执行树摘要 (RESTORED EXECUTION LOG)", rs.treeLogSummary, tui.getTheme().info);
+            }
+        } catch (Exception e) {
+            tui.printWarning("未能恢复会话 (" + e.getMessage() + ")，已开启新会话。");
+        }
+    }
+
     /**
-     * 处理用户输入（自动识别 `/` 斜杠控制台命令、直接 `git ...` 内置命令或自然语言 Agent 任务）。
+     * 处理用户输入：支持单独输入 `/` 弹出清屏式交互命令中心、`/xxx` 斜杠命令、直接 `git ...` 内置命令或自然语言任务。
      */
     public void handle(String userInput) {
         String trimmed = userInput.trim();
+        if (trimmed.equals("/")) {
+            openInteractiveSlashMenu();
+            return;
+        }
         if (trimmed.startsWith("/")) {
             handleSlashCommand(trimmed);
             return;
         }
-        // 允许用户在输入框直接敲 `git status` / `git log --oneline` 立即走内置 JGit 引擎快速响应
         if (trimmed.equals("git") || trimmed.startsWith("git ")) {
             executeDirectBuiltinGit(trimmed);
             return;
         }
         if (trimmed.equals("帮助") || trimmed.equalsIgnoreCase("help")) {
-            printHelp();
+            openInteractiveSlashMenu();
             return;
         }
 
@@ -86,50 +126,68 @@ public class AgentLoop {
     }
 
     /**
-     * 执行完整的多步 ReAct 推理与工具调用循环。
+     * 执行多步 ReAct 推理并以树型结构（Tree View）展示每一步思考、Token/缓存消耗与工具执行结果，每步自动保存进度。
      */
     private void runReActAgentTurn(String userInput) {
         turnCount++;
         history.add(new AIClient.ChatMessage("user", userInput));
 
         int maxSteps = Math.max(1, config.getMaxAgentSteps());
-        TuiTheme theme = tui.getTheme();
+        String sessId = sessionManager.getCurrentSessionId();
+
+        tui.printTreeTurnStart(turnCount, sessId, userInput);
+        sessionManager.recordTreeStep("Turn #" + turnCount + " User: " + (userInput.length() > 60 ? userInput.substring(0, 60) + "..." : userInput));
 
         for (int step = 1; step <= maxSteps; step++) {
-            String systemPrompt = SystemPromptBuilder.buildSystemPrompt(config, gitOps, githubLogin);
+            String systemPrompt = SystemPromptBuilder.buildSystemPrompt(
+                    config, gitOps, githubLogin, skillManager, mcpManager
+            );
 
-            JsonNode responseJson;
-            TuiRenderer.Spinner spinner = tui.startSpinner("Agent 正在思考与规划 (Step " + step + "/" + maxSteps + ")...");
+            AIClient.ReActStepResult stepResult;
+            TuiRenderer.Spinner spinner = tui.startSpinner("Step " + step + "/" + maxSteps + " · Waiting for " + config.getProviderId() + "/" + config.getOpenaiModel() + "...");
             try {
-                responseJson = aiClient.chatReActStep(systemPrompt, history, config.getTemperature());
+                stepResult = aiClient.chatReActStepWithUsage(systemPrompt, history, config.getTemperature());
             } catch (Exception e) {
                 spinner.stop();
-                tui.printError("AI 推理请求失败: " + e.getMessage());
+                tui.printError("模型推理调用失败: " + e.getMessage());
+                sessionManager.saveProgress(config, aiClient, turnCount, history);
                 return;
             } finally {
                 spinner.stop();
             }
 
-            String thought = responseJson.path("thought").asText("");
-            if (!thought.isBlank() && !thought.equals("Direct response from model")) {
-                System.out.println(theme.muted + "  💭 " + TuiTheme.ITALIC + thought + TuiTheme.RESET);
-            }
+            JsonNode responseJson = stepResult.json;
+            AIClient.StepUsage usage = stepResult.usage;
 
+            // 1. 渲染树型步骤头（含精确 Token 消耗与缓存命中率）
+            tui.printTreeStepHeader(step, maxSteps, usage);
+
+            String thought = responseJson.path("thought").asText("");
             JsonNode toolCalls = responseJson.get("tool_calls");
-            if (toolCalls != null && toolCalls.isArray() && !toolCalls.isEmpty()) {
-                // 记录模型的工具调用决策到上下文
+            boolean hasTools = toolCalls != null && toolCalls.isArray() && !toolCalls.isEmpty();
+
+            // 2. 渲染树型思考节点
+            tui.printTreeThought(thought, hasTools);
+            sessionManager.recordTreeStep(String.format("  ├─ Step %d [%s]: %s", step, usage.formatCompact(), thought));
+
+            if (hasTools) {
                 history.add(new AIClient.ChatMessage("assistant", responseJson.toString()));
 
                 ArrayNode toolResultsArray = mapper.createArrayNode();
+                int totalTools = toolCalls.size();
+                int toolIdx = 0;
+
                 for (JsonNode call : toolCalls) {
+                    toolIdx++;
                     String toolName = call.path("tool").asText("");
                     JsonNode args = call.path("args");
                     String summary = summarizeToolArgs(toolName, args);
                     PermissionGate.RiskLevel risk = permissionGate.classifyToolRisk(toolName, summary);
 
-                    tui.printToolCallBanner(step, toolName, summary, risk);
+                    // 3. 渲染树型工具节点起点
+                    tui.printTreeToolStart(toolIdx, totalTools, toolName, summary, risk);
 
-                    // 如果是文件写或编辑操作，在询问用户前先渲染彩色 Unified Diff 对比预览！
+                    // 写文件或编辑文件前渲染彩色 Diff 预览
                     renderPreApprovalDiffIfNeeded(toolName, args);
 
                     PermissionGate.Decision decision = permissionGate.checkPermission(toolName, summary, risk);
@@ -141,7 +199,8 @@ public class AgentLoop {
                         resultEntry.put("status", "rejected");
                         resultEntry.put("output", rejectMsg);
                         toolResultsArray.add(resultEntry);
-                        tui.printToolResult(toolName, false, rejectMsg, 0);
+                        tui.printTreeToolResult(toolIdx, totalTools, toolName, false, rejectMsg, 0);
+                        sessionManager.recordTreeStep("  │  ╰─ Tool " + toolName + " -> REJECTED");
                         continue;
                     }
 
@@ -151,41 +210,46 @@ public class AgentLoop {
                         long elapsed = System.currentTimeMillis() - t0;
                         resultEntry.put("status", "success");
                         resultEntry.put("output", truncateForContext(output, 12000));
-                        tui.printToolResult(toolName, true, output, elapsed);
+                        tui.printTreeToolResult(toolIdx, totalTools, toolName, true, output, elapsed);
+                        sessionManager.recordTreeStep("  │  ╰─ Tool " + toolName + " (" + summary + ") -> OK in " + elapsed + "ms");
                     } catch (Exception ex) {
                         long elapsed = System.currentTimeMillis() - t0;
                         String err = "ERROR: " + ex.getMessage();
                         resultEntry.put("status", "error");
                         resultEntry.put("output", err);
-                        tui.printToolResult(toolName, false, err, elapsed);
+                        tui.printTreeToolResult(toolIdx, totalTools, toolName, false, err, elapsed);
+                        sessionManager.recordTreeStep("  │  ╰─ Tool " + toolName + " -> ERROR: " + ex.getMessage());
                     }
                     toolResultsArray.add(resultEntry);
                 }
 
-                // 将工具执行观测结果（Observation）回传给下一轮 ReAct 推理
                 history.add(new AIClient.ChatMessage("user",
                         "TOOL_EXECUTION_RESULTS:\n" + toolResultsArray.toPrettyString()
-                                + "\n请根据上述工具执行结果继续下一步操作；若任务已完成，请返回包含 `final_answer` 的 JSON。"));
+                                + "\nContinue next step or return `final_answer` JSON if complete."));
+
+                // 每一步工具执行完立即保存会话进度
+                sessionManager.saveProgress(config, aiClient, turnCount, history);
                 continue;
             }
 
-            // 如果没有 tool_calls，提取 final_answer 展示给用户并结束本轮
+            // 4. 树型收尾 + 渲染最终回答 + 自动保存进度
             String finalAnswer = responseJson.path("final_answer").asText("");
             if (finalAnswer.isBlank()) {
                 finalAnswer = responseJson.toPrettyString();
             }
             history.add(new AIClient.ChatMessage("assistant", finalAnswer));
-            tui.renderMarkdownResponse(finalAnswer);
             trimHistoryIfTooLong();
+            sessionManager.saveProgress(config, aiClient, turnCount, history);
+
+            tui.printTreeTurnFooter(step, aiClient, sessId);
+            tui.renderMarkdownResponse(finalAnswer);
             return;
         }
 
-        tui.printWarning("已达到单次任务最大推理步数 (" + maxSteps + " 步)。可通过 `/config set max_steps 40` 调高上限，或输入“继续”让 Agent 接着执行。");
+        sessionManager.saveProgress(config, aiClient, turnCount, history);
+        tui.printWarning("已达到单轮最大步数 (" + maxSteps + " 步)，进度已自动保存至 " + sessId + "。可输入“继续”接着执行。");
     }
 
-    /**
-     * 在执行文件修改前向用户展示可视化彩色 Unified Diff 面板。
-     */
     private void renderPreApprovalDiffIfNeeded(String toolName, JsonNode args) {
         try {
             if ("write_file".equals(toolName)) {
@@ -207,11 +271,11 @@ public class AgentLoop {
     }
 
     /**
-     * 路由并执行全部 30 个内置工具。
+     * 路由并执行全部 34 个工具（含文件、内置JGit、GitHub REST API、Skills、MCP、Shell）。
      */
     private String executeTool(String toolName, JsonNode args) throws Exception {
         return switch (toolName) {
-            // --- A. 本地文件系统与代码编辑工具 ---
+            // --- A. 本地文件系统与代码编辑 ---
             case "list_dir" -> fsTools.listDirectoryTree(
                     args.path("path").asText("."),
                     args.path("max_depth").asInt(3));
@@ -238,7 +302,7 @@ public class AgentLoop {
 
             case "delete_file" -> fsTools.deleteFile(args.path("path").asText(""));
 
-            // --- B. 内置纯 Java JGit 引擎工具（零外部 Git 依赖） ---
+            // --- B. 内置纯 Java JGit 引擎（零外部 Git 依赖） ---
             case "git_command" -> {
                 String cmd = args.path("command").asText("status");
                 String cwdStr = args.path("cwd").asText(".");
@@ -246,7 +310,18 @@ public class AgentLoop {
                 yield gitOps.executeGitCommand(dir, cmd, githubLogin, githubClient.getTokenForGitOverHttp());
             }
 
-            // --- C. GitHub 官方 REST API 工具 ---
+            // --- C. Skills 技能包工具 ---
+            case "list_skills" -> skillManager.buildCompactSkillIndexForPrompt();
+            case "load_skill" -> skillManager.loadSkillContentForTool(args.path("name").asText(""));
+
+            // --- D. MCP (Model Context Protocol) 工具 ---
+            case "mcp_list_tools" -> mcpManager.listToolsFromServer(args.path("server").asText("all"));
+            case "mcp_call_tool" -> mcpManager.callMcpTool(
+                    args.path("server").asText(""),
+                    args.path("tool").asText(""),
+                    args.get("arguments"));
+
+            // --- E. GitHub 官方 REST API 工具 ---
             case "gh_create_project_and_publish" -> actions.createProjectAndPublish(args.path("task").asText(""));
 
             case "gh_create_repo" -> {
@@ -254,19 +329,19 @@ public class AgentLoop {
                         args.path("name").asText(),
                         args.path("description").asText(""),
                         args.path("private").asBoolean(false));
-                yield "仓库创建成功: " + res.path("html_url").asText() + " (clone_url: " + res.path("clone_url").asText() + ")";
+                yield "Created repository: " + res.path("html_url").asText() + " (clone_url: " + res.path("clone_url").asText() + ")";
             }
 
             case "gh_delete_repo" -> {
                 String owner = resolveOwner(args.path("owner").asText(""));
                 String repo = args.path("repo").asText("");
                 boolean ok = githubClient.deleteRepository(owner, repo);
-                yield ok ? "已删除仓库: " + owner + "/" + repo : "删除仓库失败: " + owner + "/" + repo;
+                yield ok ? "Deleted repository: " + owner + "/" + repo : "Failed to delete repository: " + owner + "/" + repo;
             }
 
             case "gh_fork_repo" -> {
                 JsonNode res = githubClient.forkRepository(args.path("owner").asText(), args.path("repo").asText());
-                yield "已发起 Fork: " + res.path("html_url").asText();
+                yield "Forked repository: " + res.path("html_url").asText();
             }
 
             case "gh_list_user_repos" -> actions.listUserReposFormatted(
@@ -298,14 +373,14 @@ public class AgentLoop {
                         args.path("content").asText(""),
                         args.path("branch").asText("main"),
                         args.path("sha").asText(""));
-                yield "远端文件已更新: " + res.path("content").path("html_url").asText();
+                yield "Updated remote file: " + res.path("content").path("html_url").asText();
             }
 
             case "gh_search_code" -> {
                 JsonNode res = githubClient.searchCode(args.path("query").asText(""), args.path("limit").asInt(10));
                 JsonNode items = res.path("items");
                 if (!items.isArray() || items.isEmpty()) {
-                    yield "未搜索到匹配代码。";
+                    yield "No code matches found.";
                 }
                 List<String> lines = new ArrayList<>();
                 for (JsonNode item : items) {
@@ -330,7 +405,7 @@ public class AgentLoop {
                         args.path("title").asText(""),
                         args.path("body").asText(""),
                         null);
-                yield "Issue 已创建 (#" + res.path("number").asInt() + "): " + res.path("html_url").asText();
+                yield "Created Issue #" + res.path("number").asInt() + ": " + res.path("html_url").asText();
             }
 
             case "gh_comment_issue" -> {
@@ -339,7 +414,7 @@ public class AgentLoop {
                         args.path("repo").asText(""),
                         args.path("number").asInt(1),
                         args.path("body").asText(""));
-                yield "评论已发布: " + res.path("html_url").asText();
+                yield "Added comment: " + res.path("html_url").asText();
             }
 
             case "gh_list_prs" -> actions.listPullRequestsFormatted(
@@ -356,7 +431,7 @@ public class AgentLoop {
                         args.path("body").asText(""),
                         args.path("head").asText(""),
                         args.path("base").asText("main"));
-                yield "Pull Request 已创建 (#" + res.path("number").asInt() + "): " + res.path("html_url").asText();
+                yield "Created PR #" + res.path("number").asInt() + ": " + res.path("html_url").asText();
             }
 
             case "gh_create_release" -> {
@@ -367,7 +442,7 @@ public class AgentLoop {
                         args.path("name").asText(""),
                         args.path("body").asText(""),
                         args.path("prerelease").asBoolean(false));
-                yield "Release 已发布: " + res.path("html_url").asText();
+                yield "Published Release: " + res.path("html_url").asText();
             }
 
             case "gh_star_repo" -> {
@@ -381,31 +456,27 @@ public class AgentLoop {
             }
 
             case "gh_unstar_repo" -> actions.unstarDirect(args.path("owner").asText(""), args.path("repo").asText(""));
-
             case "gh_follow_user" -> actions.followUserByName(args.path("username").asText(""));
-
             case "gh_unfollow_user" -> actions.unfollowUserByName(args.path("username").asText(""));
-
             case "gh_user_profile" -> actions.formatUserProfile(args.path("username").asText(githubLogin));
 
-            // --- D. 本地构建与命令执行工具 ---
+            // --- F. 本地 Shell 构建/测试工具 ---
             case "run_shell" -> runLocalShellCommand(
                     args.path("command").asText(""),
                     args.path("cwd").asText("."));
 
-            default -> "未知工具名称: `" + toolName + "`。请检查工具列表并重试。";
+            default -> "Unknown tool: `" + toolName + "`";
         };
     }
 
     private String runLocalShellCommand(String command, String cwdStr) throws Exception {
         if (command == null || command.isBlank()) {
-            return "命令为空";
+            return "Empty command";
         }
-        // 如果模型不小心用 run_shell 调了 git，自动转发给内置纯 Java JGit 引擎！
         String trimmed = command.trim();
         if (trimmed.equals("git") || trimmed.startsWith("git ")) {
             File dir = fsTools.resolvePath(cwdStr).toFile();
-            return "[自动路由至内置 JGit 引擎]\n" + gitOps.executeGitCommand(dir, trimmed, githubLogin, githubClient.getTokenForGitOverHttp());
+            return "[Routed to built-in JGit]\n" + gitOps.executeGitCommand(dir, trimmed, githubLogin, githubClient.getTokenForGitOverHttp());
         }
 
         File workDir = fsTools.resolvePath(cwdStr).toFile();
@@ -427,9 +498,557 @@ public class AgentLoop {
         boolean finished = process.waitFor(90, TimeUnit.SECONDS);
         if (!finished) {
             process.destroyForcibly();
-            return "命令执行超时 (超过 90 秒): " + command + "\n已输出:\n" + out;
+            return "Timed out (>90s): " + command + "\nOutput:\n" + out;
         }
         return "Exit Code: " + process.exitValue() + "\n" + out.toString().trim();
+    }
+
+    // =========================================================================
+    // 交互式 `/` 命令面板与斜杠命令路由器（每个引导面板均先清屏）
+    // =========================================================================
+
+    private void openInteractiveSlashMenu() {
+        tui.clearScreen();
+        TuiTheme th = tui.getTheme();
+        List<String> menu = List.of(
+                th.primary + TuiTheme.BOLD + "[1]  /theme" + TuiTheme.RESET + th.text + "     切换简约主题 (淡蓝纯白 / 暖橙琥珀 / 翡翠森绿 × 亮暗色)",
+                th.primary + TuiTheme.BOLD + "[2]  /provider" + TuiTheme.RESET + th.text + "  切换 AI 模型供应商、通信协议与官方端点 (13家内置供应商)",
+                th.primary + TuiTheme.BOLD + "[3]  /model" + TuiTheme.RESET + th.text + "     快速切换当前模型名称",
+                th.primary + TuiTheme.BOLD + "[4]  /resume" + TuiTheme.RESET + th.text + "    浏览历史保存的对话进度并一键恢复 (/sessions)",
+                th.primary + TuiTheme.BOLD + "[5]  /skills" + TuiTheme.RESET + th.text + "    查看、启用/禁用或新建本地 Skill 技能包",
+                th.primary + TuiTheme.BOLD + "[6]  /mcp" + TuiTheme.RESET + th.text + "       管理与测试 MCP (Model Context Protocol) 工具服务",
+                th.primary + TuiTheme.BOLD + "[7]  /yolo" + TuiTheme.RESET + th.text + "      切换 🛡️ SAFE 确认模式 与 ⚡ YOLO 全自动模式",
+                th.primary + TuiTheme.BOLD + "[8]  /git" + TuiTheme.RESET + th.text + "       打开内置纯 Java JGit 快捷命令执行器",
+                th.primary + TuiTheme.BOLD + "[9]  /tree" + TuiTheme.RESET + th.text + "      查看工作区目录树结构",
+                th.primary + TuiTheme.BOLD + "[10] /status" + TuiTheme.RESET + th.text + "    查看系统状态、Token 消耗与 Prompt 缓存命中率统计",
+                th.primary + TuiTheme.BOLD + "[11] /prompt" + TuiTheme.RESET + th.text + "    查看当前生效的精炼英文 System Prompt",
+                th.primary + TuiTheme.BOLD + "[12] /clear" + TuiTheme.RESET + th.text + "     开启新会话并清屏",
+                th.primary + TuiTheme.BOLD + "[13] /mode" + TuiTheme.RESET + th.text + "      切换权限模式 safe(默认) / strict(全确认) / yolo(全自动)",
+                th.primary + TuiTheme.BOLD + "[14] /trust" + TuiTheme.RESET + th.text + "     查看工作区授权与越界写入策略 (/trust outside on|off)",
+                th.primary + TuiTheme.BOLD + "[15] /doctor" + TuiTheme.RESET + th.text + "    运行环境自检（Java / 工作区 / 配置 / 信任 / API）",
+                th.primary + TuiTheme.BOLD + "[16] /about" + TuiTheme.RESET + th.text + "     查看版本、安装目录与启动命令",
+                th.danger + TuiTheme.BOLD + "[q]  /exit" + TuiTheme.RESET + th.text + "      保存当前会话进度并退出程序",
+                th.muted + "[0/回车]        返回对话主界面" + TuiTheme.RESET
+        );
+        tui.printBox("✦ 交互式命令中心 (COMMAND PALETTE · 输入序号或斜杠命令)", menu, th.primary);
+        System.out.print(th.primary + "  ❯ 请选择 [0-16 / q]: " + TuiTheme.RESET);
+        System.out.flush();
+
+        if (!scanner.hasNextLine()) return;
+        String choice = scanner.nextLine().trim();
+        switch (choice.toLowerCase()) {
+            case "", "0" -> refreshDashboardHeader();
+            case "1" -> handleSlashCommand("/theme");
+            case "2" -> handleSlashCommand("/provider");
+            case "3" -> handleSlashCommand("/model");
+            case "4" -> handleSlashCommand("/resume");
+            case "5" -> handleSlashCommand("/skills");
+            case "6" -> handleSlashCommand("/mcp");
+            case "7" -> handleSlashCommand("/yolo");
+            case "8" -> {
+                System.out.print(th.primary + "  ❯ 输入内置 Git 子命令 (如 `status`, `log --oneline`, `diff`): " + TuiTheme.RESET);
+                String g = scanner.hasNextLine() ? scanner.nextLine().trim() : "status";
+                executeDirectBuiltinGit(g.isEmpty() ? "status" : g);
+            }
+            case "9" -> handleSlashCommand("/tree");
+            case "10" -> handleSlashCommand("/status");
+            case "11" -> handleSlashCommand("/prompt");
+            case "12" -> handleSlashCommand("/clear");
+            case "13" -> handleSlashCommand("/mode");
+            case "14" -> handleSlashCommand("/trust");
+            case "15" -> handleSlashCommand("/doctor");
+            case "16" -> handleSlashCommand("/about");
+            case "q", "exit", "quit", "/exit", "/quit" -> handleSlashCommand("/exit");
+            default -> {
+                if (choice.startsWith("/")) {
+                    handleSlashCommand(choice);
+                } else {
+                    handle(choice);
+                }
+            }
+        }
+    }
+
+    private void handleSlashCommand(String rawCmd) {
+        String[] parts = rawCmd.trim().split("\\s+", 3);
+        String cmd = parts[0].toLowerCase();
+        String arg1 = parts.length > 1 ? parts[1] : "";
+        String arg2 = parts.length > 2 ? parts[2] : "";
+
+        try {
+            switch (cmd) {
+                case "/help", "/?", "/menu" -> openInteractiveSlashMenu();
+
+                case "/exit", "/quit" -> {
+                    sessionManager.saveProgress(config, aiClient, turnCount, history);
+                    tui.printSuccess("会话进度已保存至 `" + sessionManager.getCurrentSessionId() + "`。再见！");
+                    this.exitRequested = true;
+                }
+
+                case "/yolo" -> {
+                    boolean next = arg1.isBlank() ? !config.isYoloMode()
+                            : (arg1.equalsIgnoreCase("on") || arg1.equalsIgnoreCase("true"));
+                    config.applyPermissionMode(next
+                            ? TrustStore.PermissionMode.YOLO
+                            : TrustStore.PermissionMode.SAFE);
+                    config.save();
+                    if (next) {
+                        tui.printWarning("⚡ 已切换为 YOLO 全自动免确认模式！");
+                    } else {
+                        tui.printSuccess("🛡️ 已切换回 SAFE 确认模式（修改前展示 Diff 并询问）。");
+                    }
+                }
+
+                case "/mode", "/permission" -> {
+                    if (arg1.isBlank()) {
+                        List<String> lines = new ArrayList<>();
+                        lines.add("当前模式: " + config.getPermissionMode().id + "（" + config.getPermissionMode().description + "）");
+                        lines.add("");
+                        lines.add("[1] safe   " + TrustStore.PermissionMode.SAFE.description);
+                        lines.add("[2] strict " + TrustStore.PermissionMode.STRICT.description);
+                        lines.add("[3] yolo   " + TrustStore.PermissionMode.YOLO.description);
+                        lines.add("");
+                        lines.add("用法: `/mode safe|strict|yolo` 直接切换。");
+                        tui.printBox("🛡️ 权限模式 (PERMISSION MODE)", lines, tui.getTheme().primary);
+                    } else {
+                        TrustStore.PermissionMode target = TrustStore.PermissionMode.fromId(arg1);
+                        config.applyPermissionMode(target);
+                        config.save();
+                        TrustStore store = new TrustStore();
+                        store.trust(Path.of(config.getWorkspaceDir()), target);
+                        if (target == TrustStore.PermissionMode.YOLO) {
+                            tui.printWarning("⚡ 已切换为 YOLO 全自动模式：文件写入、Git 与 GitHub 操作将不再逐次确认。");
+                        } else {
+                            tui.printSuccess("已切换权限模式为 " + target.id + "（" + target.description + "）");
+                        }
+                    }
+                }
+
+                case "/trust" -> {
+                    Path ws = Path.of(config.getWorkspaceDir()).toAbsolutePath().normalize();
+                    TrustStore store = new TrustStore();
+                    if (arg1.equalsIgnoreCase("outside")) {
+                        boolean on = arg2.isBlank() ? !config.isAllowOutsideWorkspace()
+                                : (arg2.equalsIgnoreCase("on") || arg2.equalsIgnoreCase("true"));
+                        config.setAllowOutsideWorkspace(on);
+                        config.save();
+                        fsTools.setAllowOutside(on);
+                        if (on) {
+                            tui.printWarning("⚠ 已允许读写工作区之外的路径（越界写入不再被拒绝）。");
+                        } else {
+                            tui.printSuccess("✔ 已限制为仅工作区内可写。");
+                        }
+                    } else if (arg1.equalsIgnoreCase("revoke")) {
+                        if (store.revoke(ws)) {
+                            tui.printSuccess("已撤销该目录的信任记录，下次启动会重新询问授权。");
+                        } else {
+                            tui.printInfo("该目录本来就没有信任记录。");
+                        }
+                    } else {
+                        TrustStore.Entry entry = store.entryFor(ws);
+                        List<String> lines = new ArrayList<>();
+                        lines.add("工作区目录   : " + ws);
+                        lines.add("信任状态     : " + (entry == null ? "未授权" : "已授权（" + entry.trustedAt + "）"));
+                        lines.add("权限模式     : " + config.getPermissionMode().id + "（" + config.getPermissionMode().description + "）");
+                        lines.add("越界写入     : " + (config.isAllowOutsideWorkspace() ? "允许" : "已限制在工作区内"));
+                        lines.add("信任记录文件 : " + store.getFile());
+                        lines.add("");
+                        List<TrustStore.Entry> all = store.listTrusted();
+                        lines.add("已授权目录共 " + all.size() + " 个：");
+                        for (TrustStore.Entry e : all) {
+                            lines.add("  • " + e.dir + "  [" + e.mode + "]");
+                        }
+                        lines.add("");
+                        lines.add("用法: `/trust outside on|off` 切换越界写入 | `/trust revoke` 撤销本目录授权");
+                        tui.printBox("🔐 工作区信任与权限 (WORKSPACE TRUST)", lines, tui.getTheme().primary);
+                    }
+                }
+
+                case "/doctor" -> Doctor.print(tui, config, githubLogin);
+
+                case "/about" -> {
+                    List<String> lines = new ArrayList<>();
+                    lines.add(AppInfo.fullTitle());
+                    lines.add("");
+                    lines.add("安装目录 : " + AppInfo.homeDir());
+                    lines.add("配置文件 : " + config.getConfigPath());
+                    lines.add("信任记录 : " + AppInfo.trustFile());
+                    lines.add("启动命令 : " + AppInfo.COMMAND + " / " + AppInfo.SHORT_COMMAND);
+                    lines.add("供应商   : " + config.getProviderId() + "（协议 " + config.getProtocol() + "）");
+                    lines.add("模型     : " + config.getOpenaiModel());
+                    lines.add("");
+                    lines.add("单命令启动、工作区信任授权与安装脚本属于 v2.1+ 启动器层，v3.0 沿用。");
+                    tui.printBox("ℹ️ 关于 (ABOUT)", lines, tui.getTheme().secondary);
+                }
+
+                case "/theme" -> {
+                    if (arg1.isBlank()) {
+                        config.runWizardStep6Theme(scanner, 1, 1);
+                        config.save();
+                        tui.setTheme(TuiTheme.get(config.getTuiTheme()));
+                        refreshDashboardHeader();
+                        tui.printSuccess("已应用主题: " + tui.getTheme().displayName);
+                    } else {
+                        TuiTheme selected = TuiTheme.get(arg1);
+                        tui.setTheme(selected);
+                        config.setTuiTheme(selected.name);
+                        config.save();
+                        refreshDashboardHeader();
+                        tui.printSuccess("已应用主题: " + selected.displayName);
+                    }
+                }
+
+                case "/provider", "/setup" -> {
+                    config.runModelAndProviderSetupOnly(scanner);
+                    aiClient.setEndpoint(config.getOpenaiEndpoint());
+                    aiClient.setApiKey(config.getOpenaiKey());
+                    aiClient.setModel(config.getOpenaiModel());
+                    aiClient.setProtocol(config.getProtocol());
+                    refreshDashboardHeader();
+                    tui.printSuccess("已更新供应商与模型配置: " + config.getProviderId() + " / " + config.getOpenaiModel() + " [" + config.getProtocol() + "]");
+                }
+
+                case "/model" -> {
+                    if (arg1.isBlank()) {
+                        ProviderRegistry.ProviderSpec spec = ProviderRegistry.get(config.getProviderId());
+                        tui.clearScreen();
+                        List<String> lines = new ArrayList<>();
+                        lines.add("当前供应商: " + spec.displayName + " (" + config.getProtocol() + ")");
+                        lines.add("当前模型  : " + config.getOpenaiModel());
+                        lines.add("推荐模型  : " + String.join(", ", spec.recommendedModels));
+                        tui.printBox("🤖 切换模型 (/model)", lines, tui.getTheme().primary);
+                        System.out.print(tui.getTheme().primary + "  ❯ 输入新模型名 (直接回车取消): " + TuiTheme.RESET);
+                        String m = scanner.hasNextLine() ? scanner.nextLine().trim() : "";
+                        if (!m.isEmpty()) {
+                            config.setOpenaiModel(m);
+                            aiClient.setModel(m);
+                            config.save();
+                            tui.printSuccess("模型已更新为: " + m);
+                        }
+                    } else {
+                        String newModel = (arg2.isBlank() ? arg1 : arg1 + " " + arg2).trim();
+                        config.setOpenaiModel(newModel);
+                        aiClient.setModel(newModel);
+                        config.save();
+                        tui.printSuccess("模型已更新为: " + newModel);
+                    }
+                }
+
+                case "/sessions", "/resume" -> runInteractiveSessionsAndResume(arg1);
+
+                case "/skills", "/skill" -> runInteractiveSkillsMenu(arg1, arg2);
+
+                case "/mcp" -> runInteractiveMcpMenu(arg1, arg2);
+
+                case "/git" -> {
+                    String subGit = rawCmd.substring(4).trim();
+                    executeDirectBuiltinGit(subGit.isEmpty() ? "status" : subGit);
+                }
+
+                case "/tree" -> {
+                    String target = arg1.isBlank() ? "." : arg1;
+                    String tree = fsTools.listDirectoryTree(target, 3);
+                    tui.printBox("📂 工作区目录树 (" + target + ")", List.of(tree.split("\r?\n")), tui.getTheme().info);
+                }
+
+                case "/status" -> {
+                    tui.clearScreen();
+                    File ws = new File(config.getWorkspaceDir()).getAbsoluteFile();
+                    String gitStat = gitOps.executeGitCommand(ws, "status -s", githubLogin, githubClient.getTokenForGitOverHttp());
+                    List<String> lines = List.of(
+                            "当前会话 ID   : " + sessionManager.getCurrentSessionId() + " (" + sessionManager.getCurrentTitle() + ")",
+                            "AI 供应商     : " + config.getProviderId() + " │ 协议: " + config.getProtocol() + " │ 端点: " + config.getOpenaiEndpoint(),
+                            "AI 模型       : " + config.getOpenaiModel() + " (temperature=" + config.getTemperature() + ", max_steps=" + config.getMaxAgentSteps() + ")",
+                            "Token 消耗统计: 输入=" + String.format("%,d", aiClient.getCumulativeInputTokens())
+                                    + " │ 输出=" + String.format("%,d", aiClient.getCumulativeOutputTokens())
+                                    + " │ 总计=" + String.format("%,d", aiClient.getTotalEstimatedTokens()),
+                            "Prompt 缓存   : ⚡命中=" + String.format("%,d", aiClient.getCumulativeCacheHitTokens())
+                                    + " tokens (命中率 " + String.format("%.1f%%", aiClient.getCumulativeCacheHitRate()) + ")",
+                            "Skills & MCP  : 已加载 Skills=" + skillManager.getAllSkills().size() + " 个 │ MCP Servers=" + mcpManager.getServers().size() + " 个",
+                            "内置 JGit 状态:\n" + gitStat
+                    );
+                    tui.printBox("📊 系统状态与 Token / 缓存命中统计 (TELEMETRY)", lines, tui.getTheme().primary);
+                }
+
+                case "/config" -> {
+                    if (arg1.equalsIgnoreCase("set") && !arg2.isBlank()) {
+                        String[] kv = arg2.split("\\s+", 2);
+                        if (kv.length >= 2 && config.setDynamicProperty(kv[0], kv[1])) {
+                            aiClient.setEndpoint(config.getOpenaiEndpoint());
+                            aiClient.setApiKey(config.getOpenaiKey());
+                            aiClient.setModel(config.getOpenaiModel());
+                            aiClient.setProtocol(config.getProtocol());
+                            fsTools.setWorkspaceRoot(config.getWorkspaceDir());
+                            actions.setWorkspaceDir(config.getWorkspaceDir());
+                            tui.setTheme(TuiTheme.get(config.getTuiTheme()));
+                            tui.printSuccess("配置已更新: " + kv[0] + " = " + kv[1]);
+                        } else {
+                            tui.printWarning("用法: `/config set <provider|protocol|endpoint|key|model|theme|workspace|yolo|max_steps> <value>`");
+                        }
+                    } else {
+                        tui.clearScreen();
+                        List<String> cfgLines = List.of(
+                                "ai.provider       = " + config.getProviderId(),
+                                "ai.protocol       = " + config.getProtocol(),
+                                "openai.endpoint   = " + config.getOpenaiEndpoint(),
+                                "openai.model      = " + config.getOpenaiModel(),
+                                "tui.theme         = " + config.getTuiTheme(),
+                                "agent.yolo        = " + config.isYoloMode(),
+                                "workspace.dir     = " + config.getWorkspaceDir(),
+                                "",
+                                "💡 输入 `/provider` 可启动清屏式向导重新配置供应商与模型，或用 `/config set <key> <val>` 修改。"
+                        );
+                        tui.printBox("⚙️ 当前配置项 (CONFIGURATION)", cfgLines, tui.getTheme().primary);
+                    }
+                }
+
+                case "/prompt" -> {
+                    tui.clearScreen();
+                    String sysPrompt = SystemPromptBuilder.buildSystemPrompt(config, gitOps, githubLogin, skillManager, mcpManager);
+                    tui.printBox("📜 当前生效的英文省 Token 版 System Prompt (估算 ~" + (sysPrompt.length() / 4) + " tokens)",
+                            List.of(sysPrompt.split("\r?\n")), tui.getTheme().primary);
+                }
+
+                case "/memory" -> {
+                    Path agentMd = Path.of(config.getWorkspaceDir()).resolve(config.getCustomPromptFile());
+                    if (arg1.equalsIgnoreCase("init")) {
+                        String template = """
+                                # Project Custom Instructions (AGENT.md)
+                                - Code style: Clean, modular, defensive error handling.
+                                - Git commits: Follow Conventional Commits (feat:, fix:, refactor:, docs:, test:).
+                                """;
+                        Files.writeString(agentMd, template, StandardCharsets.UTF_8);
+                        tui.printSuccess("已创建项目级指令文件: " + agentMd.toAbsolutePath());
+                    } else {
+                        String existing = config.loadCustomProjectInstructions();
+                        if (existing.isBlank()) {
+                            tui.printInfo("未检测到 `" + config.getCustomPromptFile() + "`。输入 `/memory init` 可一键生成。");
+                        } else {
+                            tui.printBox("🧠 项目自定义指令 (" + config.getCustomPromptFile() + ")",
+                                    List.of(existing.split("\r?\n")), tui.getTheme().info);
+                        }
+                    }
+                }
+
+                case "/compact" -> {
+                    int before = history.size();
+                    if (before > 4) {
+                        List<AIClient.ChatMessage> kept = new ArrayList<>(history.subList(before - 4, before));
+                        history.clear();
+                        history.addAll(kept);
+                        sessionManager.saveProgress(config, aiClient, turnCount, history);
+                        tui.printSuccess("已压缩历史对话，保留最近 4 条核心上下文。");
+                    } else {
+                        tui.printInfo("当前消息数较少，无需压缩。");
+                    }
+                }
+
+                case "/clear", "/new" -> {
+                    sessionManager.saveProgress(config, aiClient, turnCount, history);
+                    history.clear();
+                    turnCount = 0;
+                    aiClient.resetTokenStats();
+                    permissionGate.clearSessionAllowlist();
+                    sessionManager.startNewSession();
+                    refreshDashboardHeader();
+                    tui.printSuccess("已开启全新会话: " + sessionManager.getCurrentSessionId());
+                }
+
+                default -> tui.printWarning("未知命令 `" + cmd + "`。直接输入 `/` 可打开交互式命令中心。");
+            }
+        } catch (Exception e) {
+            tui.printError("命令执行异常: " + e.getMessage());
+        }
+    }
+
+    private void runInteractiveSessionsAndResume(String argSelector) {
+        if (!argSelector.isBlank()) {
+            tui.clearScreen();
+            refreshDashboardHeader();
+            restoreSessionBySelector(argSelector);
+            return;
+        }
+        tui.clearScreen();
+        TuiTheme th = tui.getTheme();
+        List<SessionManager.SessionSummary> list = sessionManager.listSavedSessions();
+        if (list.isEmpty()) {
+            tui.printInfo("暂无已保存的历史会话。每完成一步对话，进度都会自动保存至 `.agent-sessions/`。");
+            return;
+        }
+
+        List<String> lines = new ArrayList<>();
+        for (int i = 0; i < Math.min(list.size(), 15); i++) {
+            SessionManager.SessionSummary s = list.get(i);
+            int totalTok = s.inputTokens + s.outputTokens;
+            double cachePct = s.inputTokens > 0 ? (s.cacheHitTokens * 100.0 / s.inputTokens) : 0.0;
+            String curMark = s.sessionId.equals(sessionManager.getCurrentSessionId()) ? th.success + " ◀ [当前]" + TuiTheme.RESET : "";
+            lines.add(String.format("%s[%2d]%s %s%-20s%s │ %s%-30s%s │ %d轮 │ %,d tok (⚡%.0f%%) │ %s%s",
+                    th.primary + TuiTheme.BOLD, i + 1, TuiTheme.RESET,
+                    th.secondary, s.sessionId, TuiTheme.RESET,
+                    th.text, s.title, TuiTheme.RESET,
+                    s.turnCount, totalTok, cachePct, s.updatedAt, curMark));
+        }
+        lines.add("");
+        lines.add(th.muted + "提示: 输入序号 [1-" + Math.min(list.size(), 15) + "] 立即恢复对应会话，或直接回车返回" + TuiTheme.RESET);
+        tui.printBox("💾 历史对话进度列表 (SAVED SESSIONS)", lines, th.primary);
+
+        System.out.print(th.primary + "  ❯ 请输入要恢复的会话序号或 ID (回车取消): " + TuiTheme.RESET);
+        String sel = scanner.hasNextLine() ? scanner.nextLine().trim() : "";
+        if (!sel.isEmpty()) {
+            tui.clearScreen();
+            refreshDashboardHeader();
+            restoreSessionBySelector(sel);
+        }
+    }
+
+    private void runInteractiveSkillsMenu(String subAction, String arg) throws Exception {
+        tui.clearScreen();
+        TuiTheme th = tui.getTheme();
+        skillManager.reloadSkills();
+
+        if (subAction.equalsIgnoreCase("toggle") && !arg.isEmpty()) {
+            if (skillManager.toggleSkill(arg)) {
+                tui.printSuccess("已切换技能状态: " + arg);
+            } else {
+                tui.printWarning("未找到技能: " + arg);
+            }
+            return;
+        }
+
+        List<String> lines = new ArrayList<>();
+        lines.add(th.muted + "技能目录: " + skillManager.getSkillsDir() + TuiTheme.RESET);
+        lines.add("");
+        int idx = 1;
+        List<SkillManager.Skill> skillList = new ArrayList<>(skillManager.getAllSkills().values());
+        for (SkillManager.Skill s : skillList) {
+            String badge = s.enabled ? th.success + "[已启用]" : th.muted + "[已禁用]";
+            lines.add(String.format("%s[%d]%s %s %s%-20s%s ── %s",
+                    th.primary + TuiTheme.BOLD, idx++, TuiTheme.RESET,
+                    badge + TuiTheme.RESET,
+                    th.accent + TuiTheme.BOLD, s.name, TuiTheme.RESET,
+                    th.text + s.description + TuiTheme.RESET));
+        }
+        lines.add("");
+        lines.add(th.muted + "操作: 输入序号查看技能全文 │ 输入 `t <序号>` 启用/禁用 │ 输入 `new` 新建技能 │ 回车返回" + TuiTheme.RESET);
+        tui.printBox("🧩 本地 Skills 技能包管理中心 (SKILL MANAGER)", lines, th.primary);
+
+        System.out.print(th.primary + "  ❯ 请选择操作: " + TuiTheme.RESET);
+        String in = scanner.hasNextLine() ? scanner.nextLine().trim() : "";
+        if (in.isEmpty()) return;
+
+        if (in.equalsIgnoreCase("new")) {
+            System.out.print(th.primary + "  ❯ 新技能名称 (如 spring-test): " + TuiTheme.RESET);
+            String name = scanner.hasNextLine() ? scanner.nextLine().trim() : "";
+            System.out.print(th.primary + "  ❯ 简短描述: " + TuiTheme.RESET);
+            String desc = scanner.hasNextLine() ? scanner.nextLine().trim() : "";
+            System.out.print(th.primary + "  ❯ 技能详细指令内容: " + TuiTheme.RESET);
+            String body = scanner.hasNextLine() ? scanner.nextLine().trim() : "";
+            if (!name.isEmpty()) {
+                skillManager.createSkill(name, desc, body);
+                tui.printSuccess("已创建并启用新技能: " + name);
+            }
+        } else if (in.toLowerCase().startsWith("t ")) {
+            int num = Integer.parseInt(in.substring(2).trim());
+            if (num >= 1 && num <= skillList.size()) {
+                SkillManager.Skill s = skillList.get(num - 1);
+                skillManager.toggleSkill(s.name);
+                tui.printSuccess("已切换技能 `" + s.name + "` 状态为: " + (s.enabled ? "启用" : "禁用"));
+            }
+        } else {
+            try {
+                int num = Integer.parseInt(in);
+                if (num >= 1 && num <= skillList.size()) {
+                    SkillManager.Skill s = skillList.get(num - 1);
+                    tui.printBox("📄 Skill 详情: " + s.name, List.of(s.content.split("\r?\n")), th.info);
+                }
+            } catch (NumberFormatException ignored) {
+            }
+        }
+    }
+
+    private void runInteractiveMcpMenu(String subAction, String arg) throws Exception {
+        tui.clearScreen();
+        TuiTheme th = tui.getTheme();
+        mcpManager.loadOrInitConfig();
+
+        List<String> lines = new ArrayList<>();
+        lines.add(th.muted + "配置文件: " + mcpManager.getConfigPath() + TuiTheme.RESET);
+        lines.add("");
+        List<McpClientManager.McpServerConfig> srvList = new ArrayList<>(mcpManager.getServers().values());
+        for (int i = 0; i < srvList.size(); i++) {
+            McpClientManager.McpServerConfig s = srvList.get(i);
+            String badge = s.enabled ? th.success + "[ENABLED]" : th.muted + "[DISABLED]";
+            String target = "http".equalsIgnoreCase(s.transport) ? s.url : (s.command + " " + String.join(" ", s.args));
+            lines.add(String.format("%s[%d]%s %s %s%-18s%s (%s) ── %s",
+                    th.primary + TuiTheme.BOLD, i + 1, TuiTheme.RESET,
+                    badge + TuiTheme.RESET,
+                    th.accent + TuiTheme.BOLD, s.name, TuiTheme.RESET,
+                    s.transport, th.text + target + TuiTheme.RESET));
+        }
+        lines.add("");
+        lines.add(th.muted + "操作: 输入 `t <序号>` 启用/禁用 │ `test <序号>` 测试并列出远端工具 │ `add` 新增 MCP Server │ 回车返回" + TuiTheme.RESET);
+        tui.printBox("🔌 MCP (Model Context Protocol) 服务管理中心", lines, th.primary);
+
+        System.out.print(th.primary + "  ❯ 请选择操作: " + TuiTheme.RESET);
+        String in = scanner.hasNextLine() ? scanner.nextLine().trim() : "";
+        if (in.isEmpty()) return;
+
+        if (in.equalsIgnoreCase("add")) {
+            System.out.print(th.primary + "  ❯ MCP Server 名称: " + TuiTheme.RESET);
+            String name = scanner.hasNextLine() ? scanner.nextLine().trim() : "";
+            System.out.print(th.primary + "  ❯ 类型 [1=stdio 本地命令, 2=http 远程端点]: " + TuiTheme.RESET);
+            String type = scanner.hasNextLine() ? scanner.nextLine().trim() : "1";
+            if ("2".equals(type) || "http".equalsIgnoreCase(type)) {
+                System.out.print(th.primary + "  ❯ HTTP JSON-RPC URL: " + TuiTheme.RESET);
+                String url = scanner.hasNextLine() ? scanner.nextLine().trim() : "";
+                if (!name.isEmpty() && !url.isEmpty()) {
+                    mcpManager.addHttpServer(name, url);
+                    tui.printSuccess("已添加 HTTP MCP Server: " + name);
+                }
+            } else {
+                System.out.print(th.primary + "  ❯ 启动命令 (如 npx): " + TuiTheme.RESET);
+                String cmd = scanner.hasNextLine() ? scanner.nextLine().trim() : "";
+                System.out.print(th.primary + "  ❯ 启动参数 (空格分隔，如 -y @modelcontextprotocol/server-filesystem .): " + TuiTheme.RESET);
+                String rawArgs = scanner.hasNextLine() ? scanner.nextLine().trim() : "";
+                if (!name.isEmpty() && !cmd.isEmpty()) {
+                    List<String> argList = rawArgs.isEmpty() ? List.of() : Arrays.asList(rawArgs.split("\\s+"));
+                    mcpManager.addStdioServer(name, cmd, argList);
+                    tui.printSuccess("已添加 Stdio MCP Server: " + name);
+                }
+            }
+        } else if (in.toLowerCase().startsWith("t ")) {
+            int idx = Integer.parseInt(in.substring(2).trim());
+            if (idx >= 1 && idx <= srvList.size()) {
+                McpClientManager.McpServerConfig s = srvList.get(idx - 1);
+                mcpManager.toggleServer(s.name);
+                tui.printSuccess("已切换 MCP Server `" + s.name + "` 状态为: " + (s.enabled ? "ENABLED" : "DISABLED"));
+            }
+        } else if (in.toLowerCase().startsWith("test ")) {
+            int idx = Integer.parseInt(in.substring(5).trim());
+            if (idx >= 1 && idx <= srvList.size()) {
+                McpClientManager.McpServerConfig s = srvList.get(idx - 1);
+                String res = mcpManager.listToolsFromServer(s.name);
+                tui.printBox("🔍 MCP Tools Discovery: " + s.name, List.of(res.split("\r?\n")), th.info);
+            }
+        }
+    }
+
+    private void refreshDashboardHeader() {
+        File ws = new File(config.getWorkspaceDir()).getAbsoluteFile();
+        tui.printWelcomeBanner(config, githubLogin, gitOps.getQuickStatusBadge(ws),
+                skillManager.getAllSkills().size(), mcpManager.getServers().size(),
+                sessionManager.getCurrentSessionId());
+    }
+
+    private void executeDirectBuiltinGit(String gitCmd) {
+        try {
+            File ws = new File(config.getWorkspaceDir()).getAbsoluteFile();
+            String output = gitOps.executeGitCommand(ws, gitCmd, githubLogin, githubClient.getTokenForGitOverHttp());
+            tui.printBox("🌿 Built-in JGit: git " + gitCmd.replaceFirst("^git\\s+", ""),
+                    List.of(output.split("\r?\n")), tui.getTheme().info);
+        } catch (Exception e) {
+            tui.printError("Built-in Git error: " + e.getMessage());
+        }
     }
 
     private String resolveOwner(String candidate) {
@@ -448,347 +1067,29 @@ public class AgentLoop {
                     args.path("path").asText(), args.path("start_line").asInt(1), args.path("end_line").asInt(300));
             case "write_file" -> String.format("path=%s (%d chars)",
                     args.path("path").asText(), args.path("content").asText("").length());
-            case "edit_file" -> String.format("path=%s (replace %d chars -> %d chars)",
+            case "edit_file" -> String.format("path=%s (-%d / +%d chars)",
                     args.path("path").asText(),
                     args.path("old_text").asText("").length(),
                     args.path("new_text").asText("").length());
-            case "git_command" -> "git " + args.path("command").asText() + " (cwd=" + args.path("cwd").asText(".") + ")";
-            case "run_shell" -> args.path("command").asText();
+            case "git_command" -> "git " + args.path("command").asText();
+            case "load_skill" -> "skill=" + args.path("name").asText();
+            case "mcp_call_tool" -> args.path("server").asText() + "::" + args.path("tool").asText();
             default -> {
                 String raw = args.toString();
-                yield raw.length() > 110 ? raw.substring(0, 107) + "..." : raw;
+                yield raw.length() > 95 ? raw.substring(0, 92) + "..." : raw;
             }
         };
     }
 
     private String truncateForContext(String text, int maxChars) {
-        if (text == null) {
-            return "";
-        }
-        if (text.length() <= maxChars) {
-            return text;
-        }
-        return text.substring(0, maxChars) + "\n... [输出过长，已截断其余 " + (text.length() - maxChars) + " 字符]";
+        if (text == null) return "";
+        if (text.length() <= maxChars) return text;
+        return text.substring(0, maxChars) + "\n... [truncated " + (text.length() - maxChars) + " chars]";
     }
 
     private void trimHistoryIfTooLong() {
         while (history.size() > 36) {
             history.remove(0);
         }
-    }
-
-    /**
-     * 处理 TUI 斜杠快捷指令（/help, /yolo, /theme, /model, /git, /tree, /status, /config, /prompt, /memory, /compact, /clear, /doctor）。
-     */
-    private void handleSlashCommand(String rawCmd) {
-        String[] parts = rawCmd.trim().split("\\s+", 3);
-        String cmd = parts[0].toLowerCase();
-        String arg1 = parts.length > 1 ? parts[1] : "";
-        String arg2 = parts.length > 2 ? parts[2] : "";
-
-        try {
-            switch (cmd) {
-                case "/help", "/?" -> printHelp();
-
-                case "/yolo" -> {
-                    boolean next;
-                    if (arg1.equalsIgnoreCase("on") || arg1.equalsIgnoreCase("true")) {
-                        next = true;
-                    } else if (arg1.equalsIgnoreCase("off") || arg1.equalsIgnoreCase("false")) {
-                        next = false;
-                    } else {
-                        next = !config.isYoloMode();
-                    }
-                    config.setYoloMode(next);
-                    config.save();
-                    new TrustStore().trust(Path.of(config.getWorkspaceDir()).toAbsolutePath().normalize(),
-                            next ? TrustStore.PermissionMode.YOLO : TrustStore.PermissionMode.SAFE);
-                    if (next) {
-                        tui.printWarning("⚡ YOLO 模式已【开启】！Agent 将全自动连续执行文件修改、内置Git与GitHub操作（无需逐步确认）。");
-                    } else {
-                        tui.printSuccess("🛡️ 已切换回【SAFE 安全确认模式】！修改文件或执行 Git/GitHub 变更前将展示彩色 Diff 并询问确认。");
-                    }
-                }
-
-                case "/theme" -> {
-                    if (arg1.isBlank()) {
-                        List<String> lines = new ArrayList<>();
-                        for (TuiTheme t : TuiTheme.allThemes().values()) {
-                            String active = t.name.equals(tui.getTheme().name) ? "  ◀ [当前启用]" : "";
-                            lines.add(t.primary + "● " + TuiTheme.BOLD + String.format("%-12s", t.name)
-                                    + TuiTheme.RESET + t.secondary + t.displayName + active + TuiTheme.RESET);
-                        }
-                        lines.add("");
-                        lines.add(tui.getTheme().muted + "用法: 输入 `/theme <名称>` 立即切换（如 `/theme cyberpunk` 或 `/theme codex`）" + TuiTheme.RESET);
-                        tui.printBox("🎨 可用 TUI 色彩主题列表 (AVAILABLE THEMES)", lines, tui.getTheme().primary);
-                    } else {
-                        TuiTheme selected = TuiTheme.get(arg1);
-                        tui.setTheme(selected);
-                        config.setTuiTheme(selected.name);
-                        config.save();
-                        tui.printSuccess("已切换 TUI 主题为: " + selected.displayName + " (" + selected.name + ")");
-                    }
-                }
-
-                case "/model" -> {
-                    if (arg1.isBlank()) {
-                        tui.printInfo("当前 AI 模型: " + config.getOpenaiModel() + " (用法: `/model <新模型名>`，例如 `/model claude-3-7-sonnet` 或 `/model gpt-4o`)");
-                    } else {
-                        String newModel = (arg2.isBlank() ? arg1 : arg1 + " " + arg2).trim();
-                        config.setOpenaiModel(newModel);
-                        aiClient.setModel(newModel);
-                        config.save();
-                        tui.printSuccess("已切换 AI 模型为: " + newModel);
-                    }
-                }
-
-                case "/git" -> {
-                    String subGit = rawCmd.substring(4).trim();
-                    executeDirectBuiltinGit(subGit.isEmpty() ? "status" : subGit);
-                }
-
-                case "/tree" -> {
-                    String target = arg1.isBlank() ? "." : arg1;
-                    String tree = fsTools.listDirectoryTree(target, 3);
-                    tui.printBox("📂 工作区目录结构 (" + target + ")", List.of(tree.split("\r?\n")), tui.getTheme().info);
-                }
-
-                case "/status" -> {
-                    File ws = new File(config.getWorkspaceDir()).getAbsoluteFile();
-                    String gitStat = gitOps.executeGitCommand(ws, "status -s", githubLogin, githubClient.getTokenForGitOverHttp());
-                    List<String> lines = List.of(
-                            "AI 模型      : " + config.getOpenaiModel() + " (" + config.getOpenaiEndpoint() + ")",
-                            "GitHub 账号  : " + (githubLogin == null || githubLogin.isBlank() ? "未连接" : "@" + githubLogin),
-                            "权限模式     : " + config.getPermissionMode().id + "（" + config.getPermissionMode().description + "）",
-                            "越界写入     : " + (config.isAllowOutsideWorkspace() ? "允许（--allow-outside）" : "已限制在工作区内"),
-                            "工作区路径   : " + ws.getAbsolutePath(),
-                            "配置文件     : " + config.getConfigPath(),
-                            "对话轮数     : " + turnCount + " 轮 (历史消息 " + history.size() + " 条, 累计约 " + aiClient.getTotalEstimatedTokens() + " tokens)",
-                            "内置Git状态  :\n" + gitStat
-                    );
-                    tui.printBox("📊 系统与工作区实时状态 (SYSTEM STATUS)", lines, tui.getTheme().primary);
-                }
-
-                case "/config" -> {
-                    if (arg1.equalsIgnoreCase("set") && !arg2.isBlank()) {
-                        String[] kv = arg2.split("\\s+", 2);
-                        if (kv.length < 2) {
-                            tui.printWarning("用法: `/config set <key> <value>`，例如 `/config set workspace my-code`");
-                        } else if (config.setDynamicProperty(kv[0], kv[1])) {
-                            aiClient.setEndpoint(config.getOpenaiEndpoint());
-                            aiClient.setApiKey(config.getOpenaiKey());
-                            aiClient.setModel(config.getOpenaiModel());
-                            fsTools.setWorkspaceRoot(config.getWorkspaceDir());
-                            actions.setWorkspaceDir(config.getWorkspaceDir());
-                            tui.setTheme(TuiTheme.get(config.getTuiTheme()));
-                            tui.printSuccess("已更新并持久化配置: " + kv[0] + " = " + kv[1]);
-                        } else {
-                            tui.printError("未知的配置项: " + kv[0] + " (支持: endpoint, key, model, temperature, max_steps, token, username, workspace, theme, yolo, auto_approve_read, prompt_file)");
-                        }
-                    } else {
-                        List<String> cfgLines = List.of(
-                                "openai.endpoint   = " + config.getOpenaiEndpoint(),
-                                "openai.model      = " + config.getOpenaiModel(),
-                                "openai.temperature= " + config.getTemperature(),
-                                "agent.max_steps   = " + config.getMaxAgentSteps(),
-                                "github.username   = " + config.getGithubUsername(),
-                                "workspace.dir     = " + config.getWorkspaceDir(),
-                                "tui.theme         = " + config.getTuiTheme(),
-                                "agent.yolo        = " + config.isYoloMode(),
-                                "custom_prompt     = " + config.getCustomPromptFile(),
-                                "",
-                                "💡 修改配置用法: `/config set <key> <value>` (例如 `/config set max_steps 30`)"
-                        );
-                        tui.printBox("⚙️ 当前配置项 (CONFIGURATION)", cfgLines, tui.getTheme().secondary);
-                    }
-                }
-
-                case "/prompt" -> {
-                    String sysPrompt = SystemPromptBuilder.buildSystemPrompt(config, gitOps, githubLogin);
-                    tui.printBox("📜 当前生效的 Claude Code / Codex 级 System Prompt",
-                            List.of(sysPrompt.split("\r?\n")), tui.getTheme().secondary);
-                }
-
-                case "/memory" -> {
-                    Path agentMd = Path.of(config.getWorkspaceDir()).resolve(config.getCustomPromptFile());
-                    if (arg1.equalsIgnoreCase("init")) {
-                        String template = """
-                                # Project Custom Instructions (AGENT.md)
-                                - 代码风格：保持简洁、模块化、完善的异常处理与中文注释。
-                                - Git 规范：使用 Conventional Commits (feat:, fix:, refactor:, docs:, test:)。
-                                - 构建与验证：每次修改关键逻辑后请检查语法完整性。
-                                """;
-                        Files.writeString(agentMd, template, StandardCharsets.UTF_8);
-                        tui.printSuccess("已初始化项目级自定义提示词文件: " + agentMd.toAbsolutePath());
-                    } else {
-                        String existing = config.loadCustomProjectInstructions();
-                        if (existing.isBlank()) {
-                            tui.printInfo("当前未检测到 `" + config.getCustomPromptFile() + "`。输入 `/memory init` 可一键生成项目自定义规范模板！");
-                        } else {
-                            tui.printBox("🧠 已加载的项目自定义提示词 (" + config.getCustomPromptFile() + ")",
-                                    List.of(existing.split("\r?\n")), tui.getTheme().info);
-                        }
-                    }
-                }
-
-                case "/compact" -> {
-                    int before = history.size();
-                    if (before <= 4) {
-                        tui.printInfo("当前上下文消息较少 (" + before + " 条)，无需压缩。");
-                    } else {
-                        List<AIClient.ChatMessage> kept = new ArrayList<>(history.subList(before - 4, before));
-                        history.clear();
-                        history.addAll(kept);
-                        tui.printSuccess("已压缩早期对话历史（保留最近 4 条核心上下文，释放 Token 空间）。");
-                    }
-                }
-
-                case "/clear" -> {
-                    history.clear();
-                    permissionGate.clearSessionAllowlist();
-                    tui.clearScreen();
-                    File ws = new File(config.getWorkspaceDir()).getAbsoluteFile();
-                    tui.printWelcomeBanner(config, githubLogin, gitOps.getQuickStatusBadge(ws));
-                    tui.printSuccess("已清空对话上下文与会话临时白名单。");
-                }
-
-                case "/doctor" -> Doctor.print(tui, config, githubLogin);
-
-                case "/mode" -> {
-                    if (arg1.isBlank()) {
-                        List<String> lines = new ArrayList<>();
-                        for (TrustStore.PermissionMode m : TrustStore.PermissionMode.values()) {
-                            String mark = m == config.getPermissionMode() ? "  ◀ [当前生效]" : "";
-                            lines.add(tui.getTheme().primary + "● " + TuiTheme.BOLD + String.format("%-7s", m.id)
-                                    + TuiTheme.RESET + tui.getTheme().text + m.description + mark + TuiTheme.RESET);
-                        }
-                        lines.add("");
-                        lines.add(tui.getTheme().muted + "用法: `/mode safe|strict|yolo`（会同时更新当前目录的信任记录）" + TuiTheme.RESET);
-                        tui.printBox("🛡️ 权限模式 (PERMISSION MODE)", lines, tui.getTheme().primary);
-                    } else {
-                        TrustStore.PermissionMode target = switch (arg1.toLowerCase()) {
-                            case "safe", "1" -> TrustStore.PermissionMode.SAFE;
-                            case "strict", "readonly", "2" -> TrustStore.PermissionMode.STRICT;
-                            case "yolo", "3" -> TrustStore.PermissionMode.YOLO;
-                            default -> null;
-                        };
-                        if (target == null) {
-                            tui.printWarning("未知模式: " + arg1 + "（可选 safe / strict / yolo）");
-                        } else {
-                            config.applyPermissionMode(target);
-                            config.save();
-                            new TrustStore().trust(Path.of(config.getWorkspaceDir()).toAbsolutePath().normalize(), target);
-                            if (target == TrustStore.PermissionMode.YOLO) {
-                                tui.printWarning("⚡ 已切换为 YOLO：后续文件写入、Git 提交与 GitHub 操作将直接执行，不再逐次询问。");
-                            } else {
-                                tui.printSuccess("已切换权限模式为 " + target.id + "（" + target.description + "）");
-                            }
-                        }
-                    }
-                }
-
-                case "/trust" -> {
-                    Path ws = Path.of(config.getWorkspaceDir()).toAbsolutePath().normalize();
-                    TrustStore store = new TrustStore();
-                    TrustStore.Entry entry = store.entryFor(ws);
-                    if (arg1.equalsIgnoreCase("outside")) {
-                        boolean next = arg2.equalsIgnoreCase("on") || arg2.equalsIgnoreCase("true") || arg2.isEmpty()
-                                ? !config.isAllowOutsideWorkspace()
-                                : false;
-                        config.setAllowOutsideWorkspace(next);
-                        config.save();
-                        fsTools.setAllowOutside(next);
-                        if (next) {
-                            tui.printWarning("已允许读写工作区之外的路径，请确认你清楚 Agent 正在访问什么。");
-                        } else {
-                            tui.printSuccess("已恢复工作区边界：工作区之外的写入将被拒绝。");
-                        }
-                    } else if (arg1.equalsIgnoreCase("revoke")) {
-                        boolean removed = store.revoke(ws);
-                        tui.printWarning(removed
-                                ? "已撤销该目录的信任记录，下次启动会重新询问是否允许访问。"
-                                : "该目录本来就没有信任记录。");
-                    } else {
-                        List<String> lines = new ArrayList<>();
-                        lines.add("工作区目录   : " + ws);
-                        lines.add("信任状态     : " + (entry == null ? "未授权" : "已授权（" + entry.trustedAt + "）"));
-                        lines.add("权限模式     : " + config.getPermissionMode().id + "（" + config.getPermissionMode().description + "）");
-                        lines.add("越界写入     : " + (config.isAllowOutsideWorkspace() ? "允许" : "已限制在工作区内"));
-                        lines.add("信任记录文件 : " + store.getFile());
-                        List<TrustStore.Entry> all = store.listTrusted();
-                        lines.add("");
-                        lines.add("已授权目录共 " + all.size() + " 个" + (all.isEmpty() ? "" : "："));
-                        int shown = 0;
-                        for (TrustStore.Entry e : all) {
-                            if (shown++ >= 5) {
-                                lines.add("  … 其余 " + (all.size() - 5) + " 个（见记录文件）");
-                                break;
-                            }
-                            lines.add("  • " + e.dir + "  [" + e.mode + "]");
-                        }
-                        lines.add("");
-                        lines.add("用法: `/trust outside on|off` 切换越界写入 | `/trust revoke` 撤销本目录授权");
-                        tui.printBox("🔐 工作区信任与权限 (WORKSPACE TRUST)", lines, tui.getTheme().info);
-                    }
-                }
-
-                case "/about", "/version" -> {
-                    List<String> lines = new ArrayList<>();
-                    lines.add(AppInfo.fullTitle());
-                    lines.add("启动命令 : " + AppInfo.COMMAND + " [目录]   （短别名: " + AppInfo.SHORT_COMMAND + "）");
-                    lines.add("配置目录 : " + AppInfo.homeDir());
-                    lines.add("配置文件 : " + config.getConfigPath());
-                    lines.add("信任记录 : " + AppInfo.trustFile());
-                    lines.add("内置能力 : 30 项工具 / 纯 Java JGit / GitHub REST API / 多步 ReAct");
-                    tui.printBox("ℹ️ 关于 (ABOUT)", lines, tui.getTheme().secondary);
-                }
-
-                default -> tui.printWarning("未知斜杠指令: `" + cmd + "`。输入 `/help` 查看所有支持的指令。");
-            }
-        } catch (Exception e) {
-            tui.printError("指令执行出错: " + e.getMessage());
-        }
-    }
-
-    private void executeDirectBuiltinGit(String gitCmd) {
-        try {
-            File ws = new File(config.getWorkspaceDir()).getAbsoluteFile();
-            String output = gitOps.executeGitCommand(ws, gitCmd, githubLogin, githubClient.getTokenForGitOverHttp());
-            tui.printBox("🌿 内置 JGit 执行结果: git " + gitCmd.replaceFirst("^git\\s+", ""),
-                    List.of(output.split("\r?\n")), tui.getTheme().info);
-        } catch (Exception e) {
-            tui.printError("内置 Git 执行失败: " + e.getMessage());
-        }
-    }
-
-    public void printHelp() {
-        TuiTheme th = tui.getTheme();
-        List<String> lines = List.of(
-                th.secondary + TuiTheme.BOLD + "【一、自然语言全能 Agent（支持多步读写文件 + 内置Git + GitHub API）】" + TuiTheme.RESET,
-                "  • " + th.accent + "读取与分析代码" + th.text + " : \"帮我看看当前工作区有哪些文件，读取 Main.java 并分析架构\"",
-                "  • " + th.accent + "精准编辑与重构" + th.text + " : \"给项目的 UserService.java 增加参数校验，然后用 git diff 给我看改动\"",
-                "  • " + th.accent + "内置 Git 操作 " + th.text + " : \"检查当前 git status，把修改提交为 'feat: add validation' 并查看 git log\"",
-                "  • " + th.accent + "全栈生成并发布" + th.text + " : \"帮我创建一个带 JWT 登录的 Spring Boot 项目并推送到我的 GitHub\"",
-                "  • " + th.accent + "GitHub 远端协作" + th.text + " : \"帮我搜索高星 Java 爬虫并 Star\" / \"给某仓库提个 Issue 或 PR\" / \"关注 torvalds\"",
-                "",
-                th.secondary + TuiTheme.BOLD + "【二、TUI 快捷斜杠命令面板（Slash Commands）】" + TuiTheme.RESET,
-                "  • " + th.accent + "/mode [safe|strict|yolo]" + th.text + " : 切换权限模式（写操作是否逐次确认 / 只读是否也确认 / 全自动）",
-                "  • " + th.accent + "/yolo [on|off]" + th.text + " : 一键开关 ⚡ YOLO 全自动免确认模式（等价于 /mode yolo）",
-                "  • " + th.accent + "/trust         " + th.text + " : 查看本目录信任状态、已授权目录，或 `/trust outside on` 放行越界写入",
-                "  • " + th.accent + "/theme <name> " + th.text + " : 实时切换 TUI 配色主题（支持: claude, cyberpunk, codex, dracula, nord）",
-                "  • " + th.accent + "/git <subcmd> " + th.text + " : 直接调用内置纯 Java JGit 引擎（如 `/git status`, `/git log --oneline`, `/git diff`）",
-                "  • " + th.accent + "/tree [dir]   " + th.text + " : 可视化树形展示工作区目录与文件大小",
-                "  • " + th.accent + "/model <name> " + th.text + " : 实时切换底层大模型（如 `/model claude-3-7-sonnet` 或 `/model gpt-4o`）",
-                "  • " + th.accent + "/config       " + th.text + " : 查看或热更新配置项（如 `/config set max_steps 30`）",
-                "  • " + th.accent + "/memory [init]" + th.text + " : 查看或生成项目级 `AGENT.md` 自定义规范指令（对标 CLAUDE.md）",
-                "  • " + th.accent + "/prompt       " + th.text + " : 查看当前完整的 Claude Code / Codex 级 System Prompt",
-                "  • " + th.accent + "/status       " + th.text + " : 查看当前模型、内置 Git 分支、权限模式与 Token 统计",
-                "  • " + th.accent + "/about        " + th.text + " : 查看版本号、启动命令与配置文件位置",
-                "  • " + th.accent + "/compact      " + th.text + " : 压缩长对话历史上下文，节省 Token",
-                "  • " + th.accent + "/clear        " + th.text + " : 清屏并重置当前对话会话",
-                "  • " + th.accent + "/doctor       " + th.text + " : 运行内置环境与 JGit / API 连通性自检",
-                "  • " + th.accent + "exit / 退出   " + th.text + " : 安全退出程序"
-        );
-        tui.printBox("🧭 " + AppInfo.fullTitle() + " 指令与能力全景指南", lines, th.primary);
     }
 }

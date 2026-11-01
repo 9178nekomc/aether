@@ -16,3 +16,8 @@ dependency-reduced-pom.xml
 
 # Agent 运行时生成的示例项目
 workspace/
+
+# Agent 运行时产物（会话快照 / 技能包 / MCP 配置）
+.agent-sessions/
+skills/
+mcp.json

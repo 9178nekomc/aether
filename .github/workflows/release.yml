@@ -1,6 +1,6 @@
 name: Build & Release
 
-# 打 tag（如 v2.1.0）时自动构建 fat jar 并创建 GitHub Release，
+# 打 tag（如 v3.0.0）时自动构建 fat jar 并创建 GitHub Release，
 # 同时可在 Actions 页面手动触发（workflow_dispatch）。
 on:
   push:
@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: '要发布的版本 tag（例如 v2.1.0）'
+        description: '要发布的版本 tag（例如 v3.0.0）'
         required: true
 
 permissions:
@@ -45,7 +45,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          name: GitHub AI Agent Pro ${{ github.ref_name }}
+          name: GitHub AI Agent ${{ github.ref_name }}
           files: |
             target/github-agent.jar
             install.sh
@@ -80,3 +80,14 @@ jobs:
             ```
 
             权限模式：`safe`（默认，写操作前确认）/ `strict`（每次调用都确认）/ `yolo`（全自动）。
+
+            ## v3.0 亮点
+
+            - **13 家模型供应商 + 4 大协议**：DeepSeek / OpenAI / Anthropic / Gemini / DashScope / SiliconFlow / 智谱 / Moonshot / 火山方舟 / OpenRouter / xAI / Ollama / 自定义，
+              协议支持 `openai-chat`、`openai-responses`、`anthropic-messages`（自动注入缓存断点）、`gemini-native`。
+            - **树型步骤追踪**：每一步的 Thought / Tool / 耗时 / Token / Prompt Cache 命中率可视化。
+            - **会话恢复**：`--resume` 或 `/resume` 跨进程恢复历史对话。
+            - **Skills 与 MCP 扩展**：工作区内 `skills/` 与 `mcp.json`，运行时增删。
+            - **6 套极简主题**：淡蓝/暖橙/翠绿 × 亮暗色。
+
+            切换供应商：`github-agent --provider anthropic --model claude-sonnet-4-5`

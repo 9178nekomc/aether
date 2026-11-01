@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-    GitHub AI Agent Pro —— Windows 安装脚本 (v2.1.3)
+    GitHub AI Agent —— Windows 安装脚本 (v3.0.0)
 
 .DESCRIPTION
     安装后即可在任意目录（PowerShell / CMD / Windows Terminal）用一条命令启动：
@@ -50,7 +50,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-$ScriptVersion = '2.1.3'
+$ScriptVersion = '3.0.0'
 $Repo = '9178nekomc/github-Agent'
 $ReleaseJarUrl = "https://github.com/$Repo/releases/latest/download/github-agent.jar"
 
@@ -125,7 +125,7 @@ function Save-PathBackup([string]$raw) {
 # ------------------------------------------------------------------ 卸载
 if ($Uninstall) {
     Write-Host ""
-    Write-Host "卸载 GitHub AI Agent Pro" -ForegroundColor White
+    Write-Host "卸载 GitHub AI Agent" -ForegroundColor White
     foreach ($name in @('github-agent.cmd', 'gha.cmd', 'github-agent.ps1', 'gha.ps1')) {
         $p = Join-Path $BinDir $name
         if (Test-Path $p) { Remove-Item $p -Force; Write-Ok "已移除 $p" }
@@ -157,7 +157,7 @@ if ($Uninstall) {
 # ------------------------------------------------------------------ 环境检查
 Write-Host ""
 Write-Host "================================================================" -ForegroundColor DarkCyan
-Write-Host "   GitHub AI Agent Pro  ·  Windows 安装程序  v$ScriptVersion" -ForegroundColor Cyan
+Write-Host "   GitHub AI Agent  ·  Windows 安装程序  v$ScriptVersion" -ForegroundColor Cyan
 Write-Host "================================================================" -ForegroundColor DarkCyan
 
 $javaExe = $null

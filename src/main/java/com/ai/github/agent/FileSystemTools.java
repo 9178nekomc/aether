@@ -16,7 +16,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 /**
- * 本地文件系统与代码精修工具集（对标 Claude Code / Codex 的 Read, Write, Edit, Glob, Grep 工具）。
+ * 本地文件系统与代码精修工具集（对标 Autonomous Agent / Codex 的 Read, Write, Edit, Glob, Grep 工具）。
  *
  * 包含安全沙箱边界检查与：
  * 1. readFile    - 带行号读取文件（支持指定起止行 startLine ~ endLine）
@@ -30,7 +30,7 @@ public class FileSystemTools {
 
     private Path workspaceRoot;
     /**
-     * 是否把文件操作限制在工作区内（v2.1 起默认开启，配合 TrustGate 的授权结果使用）。
+     * 是否把文件操作限制在工作区内（启动器默认开启，配合 TrustGate 的授权结果使用）。
      * 开启后：相对路径一律基于工作区解析，工作区之外的写入/删除会被拒绝。
      */
     private boolean enforceWorkspace = false;
@@ -115,7 +115,7 @@ public class FileSystemTools {
     }
 
     /**
-     * 读取文件内容并附带 1-indexed 行号（仿 `cat -n` / Claude Code Read 格式）。
+     * 读取文件内容并附带 1-indexed 行号（仿 `cat -n` / Autonomous Agent Read 格式）。
      */
     public String readFile(String pathStr, int startLine, int endLine) throws IOException {
         Path path = resolvePath(pathStr);
@@ -181,10 +181,10 @@ public class FileSystemTools {
      */
     public String editFile(String pathStr, String oldText, String newText, boolean replaceAll) throws IOException {
         Path path = resolvePath(pathStr);
+        assertWritable(path);
         if (!Files.exists(path)) {
             return "错误: 目标文件不存在 -> " + path;
         }
-        assertWritable(path);
         String current = Files.readString(path, StandardCharsets.UTF_8);
         if (oldText == null || oldText.isEmpty()) {
             return "错误: edit_file 的 old_text 不能为空。";
@@ -346,10 +346,10 @@ public class FileSystemTools {
 
     public String deleteFile(String pathStr) throws IOException {
         Path path = resolvePath(pathStr);
+        assertWritable(path);
         if (!Files.exists(path)) {
             return "目标文件不存在: " + path;
         }
-        assertWritable(path);
         Files.delete(path);
         return "已删除: " + path;
     }
