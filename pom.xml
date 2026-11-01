@@ -6,7 +6,7 @@
 
     <groupId>com.ai.github</groupId>
     <artifactId>github-agent</artifactId>
-    <version>2.1.0</version>
+    <version>2.1.1</version>
     <packaging>jar</packaging>
     <name>GitHub AI Agent Pro (CLI Launcher + TUI + Built-in Git + ReAct Engine)</name>
     <description>安装后一个命令即可启动的终端 AI 编程与 GitHub 智能体（含工作区信任授权）</description>

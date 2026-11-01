@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-    GitHub AI Agent Pro —— Windows 安装脚本 (v2.1.0)
+    GitHub AI Agent Pro —— Windows 安装脚本 (v2.1.1)
 
 .DESCRIPTION
     安装后即可在任意目录（PowerShell / CMD / Windows Terminal）用一条命令启动：
@@ -50,7 +50,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-$ScriptVersion = '2.1.0'
+$ScriptVersion = '2.1.1'
 $Repo = '9178nekomc/github-Agent'
 $ReleaseJarUrl = "https://github.com/$Repo/releases/latest/download/github-agent.jar"
 
@@ -66,6 +66,43 @@ function Write-Ok($msg)   { Write-Host "  " -NoNewline; Write-Host "OK " -Foregr
 function Write-Info($msg) { Write-Host "  i  " -ForegroundColor Cyan -NoNewline; Write-Host $msg }
 function Write-Warn2($msg){ Write-Host "  !  " -ForegroundColor Yellow -NoNewline; Write-Host $msg }
 function Fail($msg) { Write-Host "  X  " -ForegroundColor Red -NoNewline; Write-Host $msg; exit 1 }
+
+# ------------------------------------------------- 用户 PATH 的安全读写
+# 直接走注册表，而不是 [Environment]::SetEnvironmentVariable：
+# 后者会把 REG_EXPAND_SZ 读成已展开的字符串再写回 REG_SZ，
+# 于是 PATH 里 %USERPROFILE% 这类变量被永久固化成绝对路径（不可逆副作用）。
+function Get-UserPathInfo {
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $false)
+    if (-not $key) {
+        return [pscustomobject]@{ Value = ''; Kind = [Microsoft.Win32.RegistryValueKind]::ExpandString; Exists = $false }
+    }
+    try {
+        $raw = $key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
+        try { $kind = $key.GetValueKind('Path') } catch { }
+        return [pscustomobject]@{ Value = [string]$raw; Kind = $kind; Exists = $true }
+    } finally { $key.Close() }
+}
+
+function Set-UserPath([string]$value, $kind) {
+    if ($value -match '%') { $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString }
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+    if (-not $key) { $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment') }
+    try { $key.SetValue('Path', $value, $kind) } finally { $key.Close() }
+}
+
+function Save-PathBackup([string]$raw) {
+    $bk = Join-Path $Root 'path-backup.txt'
+    if (-not (Test-Path $Root)) { $bk = Join-Path ([System.IO.Path]::GetTempPath()) 'github-agent-path-backup.txt' }
+    try {
+        $stamp = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+        "备份时间: $stamp`r`n说明: 安装/卸载脚本修改前的用户 PATH 原始值（未展开环境变量）`r`n`r`n$raw" |
+            Set-Content -Path $bk -Encoding UTF8
+        Write-Info "已备份原用户 PATH: $bk"
+    } catch {
+        Write-Warn2 "PATH 备份写入失败（$($_.Exception.Message)），继续执行。"
+    }
+}
 
 # ------------------------------------------------------------------ 卸载
 if ($Uninstall) {
@@ -83,11 +120,15 @@ if ($Uninstall) {
     } else {
         Write-Warn2 "已保留配置与信任记录: $Root（加 -Purge 可一并删除）"
     }
-    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-    if ($userPath) {
-        $parts = $userPath -split ';' | Where-Object { $_ -and $_.TrimEnd('\') -ne $BinDir.TrimEnd('\') }
-        [Environment]::SetEnvironmentVariable('Path', ($parts -join ';'), 'User')
-        Write-Ok "已从用户 PATH 移除 $BinDir"
+    $pathInfo = Get-UserPathInfo
+    if ($pathInfo.Value) {
+        $parts = $pathInfo.Value -split ';' | Where-Object { $_ -and $_.TrimEnd('\') -ne $BinDir.TrimEnd('\') }
+        $joined = ($parts -join ';')
+        if ($joined -ne $pathInfo.Value) {
+            Save-PathBackup $pathInfo.Value
+            Set-UserPath $joined $pathInfo.Kind
+            Write-Ok "已从用户 PATH 移除 $BinDir"
+        }
     }
     Write-Host ""
     Write-Host "卸载完成。" -ForegroundColor Green
@@ -228,8 +269,8 @@ Write-Ok "启动器已创建: $(Join-Path $BinDir 'github-agent.cmd')（别名: 
 if ($NoPath) {
     Write-Warn2 "已跳过 PATH 配置（-NoPath）。手动添加：$BinDir"
 } else {
-    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-    if (-not $userPath) { $userPath = '' }
+    $pathInfo = Get-UserPathInfo
+    $userPath = $pathInfo.Value
     $exists = $false
     foreach ($p in ($userPath -split ';')) {
         if ($p -and $p.TrimEnd('\') -ieq $BinDir.TrimEnd('\')) { $exists = $true; break }
@@ -237,9 +278,10 @@ if ($NoPath) {
     if ($exists) {
         Write-Ok "用户 PATH 中已包含 $BinDir"
     } else {
+        Save-PathBackup $userPath
         $newPath = $userPath
         if ($newPath -and -not $newPath.EndsWith(';')) { $newPath = $newPath + ';' }
-        [Environment]::SetEnvironmentVariable('Path', ($newPath + $BinDir), 'User')
+        Set-UserPath ($newPath + $BinDir) $pathInfo.Kind
         Write-Ok "已把 $BinDir 加入用户 PATH（新开的终端生效）"
     }
     if (($env:Path -split ';') -notcontains $BinDir) {

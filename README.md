@@ -41,7 +41,7 @@ cd github-Agent
 powershell -ExecutionPolicy Bypass -File .\install.ps1   # Windows
 ```
 
-安装脚本会：检查 Java 21 → 构建或下载 `github-agent.jar` → 生成 `github-agent` / `gha` 启动器 → 把启动器目录加入 PATH → 自检并打印下一步。安装后**重开一个终端**即可全局使用。
+安装脚本会：检查 Java 21 → 构建或下载 `github-agent.jar` → 生成 `github-agent` / `gha` 启动器 → 把启动器目录加入 PATH → 自检并打印下一步。修改 PATH 前会把原始值备份到 `~/.github-agent/path-backup.txt`（Windows 下按注册表原始类型写回，不会把 `%USERPROFILE%` 这类变量固化成绝对路径）。安装后**重开一个终端**即可全局使用。
 
 卸载：`./install.sh --uninstall [--purge]` 或 `.\install.ps1 -Uninstall [-Purge]`。
 
@@ -146,7 +146,7 @@ java -jar target/github-agent.jar --version
 ```
 
 - **要求**：JDK 21+、Maven 3.8+（运行时不强制要求安装 Git）
-- 发版：`git tag v2.1.0 && git push origin v2.1.0`，GitHub Actions 会自动构建并发布 Release（含 jar 与安装脚本）。
+- 发版：`git tag v2.1.1 && git push origin v2.1.1`，GitHub Actions 会自动构建并发布 Release（含 jar 与安装脚本）。
 
 ## 📂 项目源码结构
 
