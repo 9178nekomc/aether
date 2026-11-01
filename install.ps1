@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-    GitHub AI Agent —— Windows 安装脚本 (v3.0.0)
+    GitHub AI Agent —— Windows 安装脚本 (v3.0.1)
 
 .DESCRIPTION
     安装后即可在任意目录（PowerShell / CMD / Windows Terminal）用一条命令启动：
@@ -50,7 +50,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-$ScriptVersion = '3.0.0'
+$ScriptVersion = '3.0.1'
 $Repo = '9178nekomc/github-Agent'
 $ReleaseJarUrl = "https://github.com/$Repo/releases/latest/download/github-agent.jar"
 

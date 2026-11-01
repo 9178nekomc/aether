@@ -25,7 +25,7 @@ public final class AppInfo {
     public static final String SHORT_COMMAND = "gha";
 
     /** 兜底版本号；打包后优先从 jar 清单的 Implementation-Version 读取，避免与 pom 不一致。 */
-    private static final String FALLBACK_VERSION = "3.0.0";
+    private static final String FALLBACK_VERSION = "3.0.1";
 
     private AppInfo() {
     }

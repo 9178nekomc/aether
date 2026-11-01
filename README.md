@@ -181,7 +181,7 @@ java -jar target/github-agent.jar --version
 ```
 
 - **要求**：JDK 21+、Maven 3.8+（运行时不强制要求安装 Git）
-- 发版：`git tag v3.0.0 && git push origin v3.0.0`，GitHub Actions 会自动构建并发布 Release（含 jar 与安装脚本）。
+- 发版：`git tag v3.0.1 && git push origin v3.0.1`，GitHub Actions 会自动构建并发布 Release（含 jar 与安装脚本）。
 
 ## 📂 项目源码结构
 

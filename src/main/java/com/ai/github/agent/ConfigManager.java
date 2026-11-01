@@ -308,29 +308,20 @@ public class ConfigManager {
     private void runWizardStep4Model(Scanner scanner, TuiTheme theme, int step, int total) {
         clearTerminalScreen();
         ProviderRegistry.ProviderSpec spec = ProviderRegistry.get(this.providerId);
-        printWizardStepHeader(theme, step, total, "选择或输入模型名称 (Select Model)");
+        printWizardStepHeader(theme, step, total, "输入模型名称 (Model Name)");
 
-        System.out.println(theme.muted + "  " + spec.displayName + " 常用推荐模型：" + TuiTheme.RESET);
-        List<String> models = spec.recommendedModels;
-        for (int i = 0; i < models.size(); i++) {
-            String m = models.get(i);
-            String mark = m.equals(this.openaiModel) ? theme.success + " ◀ [默认]" + TuiTheme.RESET : "";
-            System.out.printf("  %s[%d]%s %s%s%n", theme.primary + TuiTheme.BOLD, i + 1, TuiTheme.RESET, theme.text + m + TuiTheme.RESET, mark);
+        // 推荐模型只作为参考提示，不做编号选择：模型名以用户输入为准，
+        // 避免「输入 1 到底是指第 1 个模型还是名为 1 的模型」这类歧义。
+        System.out.println(theme.muted + "  " + spec.displayName + " 常见模型（仅供参考，可直接输入任意模型名）：" + TuiTheme.RESET);
+        for (String m : spec.recommendedModels) {
+            String mark = m.equals(this.openaiModel) ? theme.success + " ◀ [当前]" + TuiTheme.RESET : "";
+            System.out.println("    " + theme.text + "· " + m + TuiTheme.RESET + mark);
         }
         System.out.println();
-        System.out.print(theme.primary + "  ❯ 输入序号 [1-" + models.size() + "] 或直接输入任意自定义模型名 [回车保持 `" + this.openaiModel + "`]: " + TuiTheme.RESET);
+        System.out.print(theme.primary + "  ❯ 请输入模型名称 [回车保持 `" + this.openaiModel + "`]: " + TuiTheme.RESET);
         String mIn = scanner.hasNextLine() ? scanner.nextLine().trim() : "";
         if (!mIn.isEmpty()) {
-            try {
-                int idx = Integer.parseInt(mIn);
-                if (idx >= 1 && idx <= models.size()) {
-                    this.openaiModel = models.get(idx - 1);
-                } else {
-                    this.openaiModel = mIn;
-                }
-            } catch (NumberFormatException e) {
-                this.openaiModel = mIn;
-            }
+            this.openaiModel = mIn;
         }
     }
 

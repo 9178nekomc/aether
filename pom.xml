@@ -6,7 +6,7 @@
 
     <groupId>com.ai.github</groupId>
     <artifactId>github-agent</artifactId>
-    <version>3.0.0</version>
+    <version>3.0.1</version>
     <packaging>jar</packaging>
     <name>GitHub AI Agent v3.0 (Minimalist TUI Workbench)</name>
 
