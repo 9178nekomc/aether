@@ -1,4 +1,4 @@
-package com.ai.github.agent;
+package com.aether.agent;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -274,7 +274,7 @@ public class McpClientManager {
             initParams.put("protocolVersion", "2024-11-05");
             initParams.putObject("capabilities");
             ObjectNode clientInfo = initParams.putObject("clientInfo");
-            clientInfo.put("name", "github-agent");
+            clientInfo.put("name", "aether");
             clientInfo.put("version", "3.0.0");
 
             writer.write(mapper.writeValueAsString(initReq) + "\n");

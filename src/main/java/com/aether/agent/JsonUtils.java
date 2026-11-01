@@ -1,4 +1,4 @@
-package com.ai.github.agent;
+package com.aether.agent;
 
 /**
  * JSON 与模型输出文本清洗工具（v2.0 增强版）。

@@ -1,26 +1,26 @@
 ﻿<#
 .SYNOPSIS
-    GitHub AI Agent —— Windows 安装脚本 (v3.0.1)
+    Aether —— Windows 安装脚本 (v3.1.0)
 
 .DESCRIPTION
     安装后即可在任意目录（PowerShell / CMD / Windows Terminal）用一条命令启动：
 
-        github-agent            # 在当前目录启动（首次会询问是否允许访问该工作区）
-        github-agent D:\proj    # 在指定目录启动
-        gha                     # 短别名
+        aether            # 在当前目录启动（首次会询问是否允许访问该工作区）
+        aether D:\proj    # 在指定目录启动
+        ae                # 短别名（等价于 aether）
 
     目录布局：
-        %USERPROFILE%\.github-agent\lib\github-agent.jar   程序本体
-        %USERPROFILE%\.github-agent\config.properties      API Key / Token / 主题
-        %USERPROFILE%\.github-agent\trusted-dirs.json      已授权的工作区目录
-        %USERPROFILE%\.github-agent\bin\github-agent.cmd   启动器（已加入用户 PATH）
-        %USERPROFILE%\.github-agent\bin\gha.cmd            短别名
+        %USERPROFILE%\.aether\lib\aether.jar        程序本体
+        %USERPROFILE%\.aether\config.properties     供应商 / 密钥 / Token / 主题 / 权限
+        %USERPROFILE%\.aether\trusted-dirs.json     已授权的工作区目录与权限模式
+        %USERPROFILE%\.aether\bin\aether.cmd        启动器（已加入用户 PATH）
+        %USERPROFILE%\.aether\bin\ae.cmd            短别名
 
 .PARAMETER JarPath
-    使用本地已构建好的 fat jar 安装（默认自动查找 target\github-agent.jar，其次 Maven 构建，最后从 Release 下载）
+    使用本地已构建好的 fat jar 安装（默认自动查找 target\aether.jar，其次 Maven 构建，最后从 Release 下载）
 
 .PARAMETER Root
-    安装根目录（默认 $env:USERPROFILE\.github-agent）
+    安装根目录（默认 $env:USERPROFILE\.aether）
 
 .PARAMETER NoPath
     不修改用户 PATH，只在标准输出打印需要手动添加的路径
@@ -35,7 +35,7 @@
     powershell -ExecutionPolicy Bypass -File .\install.ps1
 
 .EXAMPLE
-    irm https://raw.githubusercontent.com/9178nekomc/github-Agent/main/install.ps1 | iex
+    irm https://raw.githubusercontent.com/9178nekomc/aether/main/install.ps1 | iex
 #>
 [CmdletBinding()]
 param(
@@ -50,13 +50,13 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-$ScriptVersion = '3.0.1'
-$Repo = '9178nekomc/github-Agent'
-$ReleaseJarUrl = "https://github.com/$Repo/releases/latest/download/github-agent.jar"
+$ScriptVersion = '3.1.0'
+$Repo = '9178nekomc/aether'
+$ReleaseJarUrl = "https://github.com/$Repo/releases/latest/download/aether.jar"
 
 if (-not $Root -or $Root.Trim() -eq '') {
-    if ($env:GITHUB_AGENT_HOME -and $env:GITHUB_AGENT_HOME.Trim() -ne '') { $Root = $env:GITHUB_AGENT_HOME }
-    else { $Root = Join-Path $env:USERPROFILE '.github-agent' }
+    if ($env:AETHER_HOME -and $env:AETHER_HOME.Trim() -ne '') { $Root = $env:AETHER_HOME }
+    else { $Root = Join-Path $env:USERPROFILE '.aether' }
 }
 if (-not $BinDir -or $BinDir.Trim() -eq '') {
     $BinDir = Join-Path $Root 'bin'
@@ -99,7 +99,7 @@ function Set-UserPath([string]$value, $kind) {
 # 这样可以避免 Add-Type 运行时编译——在 ConstrainedLanguage / AppLocker 环境下会被拦截，
 # 而安装脚本恰恰经常在这些受限环境里运行。用临时变量触发广播，随后立即删除，不留残留。
 function Send-EnvironmentChanged {
-    $probe = 'GITHUB_AGENT_ENV_REFRESH'
+    $probe = 'AETHER_ENV_REFRESH'
     try {
         [Environment]::SetEnvironmentVariable($probe, '1', 'User')
     } catch {
@@ -111,7 +111,7 @@ function Send-EnvironmentChanged {
 
 function Save-PathBackup([string]$raw) {
     $bk = Join-Path $Root 'path-backup.txt'
-    if (-not (Test-Path $Root)) { $bk = Join-Path ([System.IO.Path]::GetTempPath()) 'github-agent-path-backup.txt' }
+    if (-not (Test-Path $Root)) { $bk = Join-Path ([System.IO.Path]::GetTempPath()) 'aether-path-backup.txt' }
     try {
         $stamp = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
         "备份时间: $stamp`r`n说明: 安装/卸载脚本修改前的用户 PATH 原始值（未展开环境变量）`r`n`r`n$raw" |
@@ -125,12 +125,12 @@ function Save-PathBackup([string]$raw) {
 # ------------------------------------------------------------------ 卸载
 if ($Uninstall) {
     Write-Host ""
-    Write-Host "卸载 GitHub AI Agent" -ForegroundColor White
-    foreach ($name in @('github-agent.cmd', 'gha.cmd', 'github-agent.ps1', 'gha.ps1')) {
+    Write-Host "卸载 Aether" -ForegroundColor White
+    foreach ($name in @('aether.cmd', 'ae.cmd', 'aether.ps1', 'ae.ps1')) {
         $p = Join-Path $BinDir $name
         if (Test-Path $p) { Remove-Item $p -Force; Write-Ok "已移除 $p" }
     }
-    $jar = Join-Path $Root 'lib\github-agent.jar'
+    $jar = Join-Path $Root 'lib\aether.jar'
     if (Test-Path $jar) { Remove-Item $jar -Force; Write-Ok "已移除 $jar" }
     if ($Purge) {
         Remove-Item $Root -Recurse -Force -ErrorAction SilentlyContinue
@@ -157,7 +157,7 @@ if ($Uninstall) {
 # ------------------------------------------------------------------ 环境检查
 Write-Host ""
 Write-Host "================================================================" -ForegroundColor DarkCyan
-Write-Host "   GitHub AI Agent  ·  Windows 安装程序  v$ScriptVersion" -ForegroundColor Cyan
+Write-Host "   Aether  ·  Windows 安装程序  v$ScriptVersion" -ForegroundColor Cyan
 Write-Host "================================================================" -ForegroundColor DarkCyan
 
 $javaExe = $null
@@ -203,8 +203,8 @@ Write-Ok "Java 环境正常（$javaExe）"
 # ------------------------------------------------------------------ 获取 jar
 $libDir = Join-Path $Root 'lib'
 New-Item -ItemType Directory -Force -Path $libDir | Out-Null
-$targetJar = Join-Path $libDir 'github-agent.jar'
-$tempJar = Join-Path ([System.IO.Path]::GetTempPath()) ("github-agent-" + [guid]::NewGuid().ToString('N') + ".jar")
+$targetJar = Join-Path $libDir 'aether.jar'
+$tempJar = Join-Path ([System.IO.Path]::GetTempPath()) ("aether-" + [guid]::NewGuid().ToString('N') + ".jar")
 
 $resolved = $false
 if ($JarPath -and $JarPath.Trim() -ne '') {
@@ -214,7 +214,7 @@ if ($JarPath -and $JarPath.Trim() -ne '') {
     $resolved = $true
 }
 if (-not $resolved -and $PSScriptRoot) {
-    $built = Join-Path $PSScriptRoot 'target\github-agent.jar'
+    $built = Join-Path $PSScriptRoot 'target\aether.jar'
     if (Test-Path $built) {
         Copy-Item $built $tempJar -Force
         Write-Info "使用已构建产物: $built"
@@ -263,14 +263,14 @@ New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
 
 $cmdBody = @"
 @echo off
-rem github-agent launcher (generated by installer v$ScriptVersion)
+rem aether launcher (generated by installer v$ScriptVersion)
 setlocal
-if not defined GITHUB_AGENT_HOME set "GITHUB_AGENT_HOME=$Root"
+if not defined AETHER_HOME set "AETHER_HOME=$Root"
 set "JAR=$targetJar"
 set "JAVA_BIN=java"
 if defined JAVA_HOME if exist "%JAVA_HOME%\bin\java.exe" set "JAVA_BIN=%JAVA_HOME%\bin\java.exe"
 if not exist "%JAR%" (
-  echo [x] 找不到 github-agent.jar: %JAR%
+  echo [x] 找不到 aether.jar: %JAR%
   echo     请重新运行安装脚本 install.ps1
   exit /b 127
 )
@@ -288,9 +288,9 @@ exit /b %GHA_RC%
 
 # cmd 文件必须用系统 ANSI 编码写入，否则含中文路径时会被破坏
 $ansi = [System.Text.Encoding]::Default
-[System.IO.File]::WriteAllText((Join-Path $BinDir 'github-agent.cmd'), ($cmdBody -replace "`r?`n", "`r`n"), $ansi)
-[System.IO.File]::WriteAllText((Join-Path $BinDir 'gha.cmd'), ($cmdBody -replace "`r?`n", "`r`n"), $ansi)
-Write-Ok "启动器已创建: $(Join-Path $BinDir 'github-agent.cmd')（别名: gha.cmd）"
+[System.IO.File]::WriteAllText((Join-Path $BinDir 'aether.cmd'), ($cmdBody -replace "`r?`n", "`r`n"), $ansi)
+[System.IO.File]::WriteAllText((Join-Path $BinDir 'ae.cmd'), ($cmdBody -replace "`r?`n", "`r`n"), $ansi)
+Write-Ok "启动器已创建: $(Join-Path $BinDir 'aether.cmd')（别名: ae.cmd）"
 
 # ------------------------------------------------------------------ PATH
 if ($NoPath) {
@@ -318,11 +318,16 @@ if ($NoPath) {
 
 # ------------------------------------------------------------------ 自检
 Write-Host ""
-$versionCheck = & (Join-Path $BinDir 'github-agent.cmd') --version
+$versionCheck = & (Join-Path $BinDir 'aether.cmd') --version
 if ($LASTEXITCODE -eq 0 -and $versionCheck) {
     Write-Ok "自检通过：$($versionCheck | Select-Object -First 1)"
 } else {
-    Write-Warn2 "自检未能运行，请手动执行: & '$BinDir\github-agent.cmd' --version"
+    Write-Warn2 "自检未能运行，请手动执行: & '$BinDir\aether.cmd' --version"
+}
+
+$legacyBin = Join-Path $env:USERPROFILE '.github-agent\bin'
+if (Test-Path $legacyBin) {
+    Write-Warn2 "检测到旧版仍在 $legacyBin（命令 github-agent / gha），确认新版可用后可手动删除该目录。"
 }
 
 Write-Host ""
@@ -330,15 +335,15 @@ Write-Host "安装完成！" -ForegroundColor Green
 Write-Host ""
 Write-Host "  下一步：" -ForegroundColor White
 Write-Host "    cd 你的项目目录"
-Write-Host "    github-agent        " -NoNewline -ForegroundColor Cyan
+Write-Host "    aether        " -NoNewline -ForegroundColor Cyan
 Write-Host "# 启动（首次会询问是否允许访问该工作区，并选择权限模式）"
 Write-Host ""
 Write-Host "  常用参数：" -ForegroundColor White
-Write-Host "    github-agent D:\code\proj          # 指定工作区"
-Write-Host "    github-agent -p `"重构这个模块`"     # 一次性任务"
-Write-Host "    github-agent --doctor             # 环境自检"
-Write-Host "    github-agent --help               # 全部参数"
-Write-Host "    github-agent --forget             # 撤销当前目录授权"
+Write-Host "    aether D:\code\proj          # 指定工作区"
+Write-Host "    aether -p `"重构这个模块`"     # 一次性任务"
+Write-Host "    aether --doctor             # 环境自检"
+Write-Host "    aether --help               # 全部参数"
+Write-Host "    aether --forget             # 撤销当前目录授权"
 Write-Host ""
 Write-Host "  配置文件: $(Join-Path $Root 'config.properties')" -ForegroundColor DarkGray
 Write-Host "  信任记录: $(Join-Path $Root 'trusted-dirs.json')" -ForegroundColor DarkGray

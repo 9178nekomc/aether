@@ -1,4 +1,4 @@
-package com.ai.github.agent;
+package com.aether.agent;
 
 import java.io.File;
 
@@ -15,7 +15,7 @@ import java.io.File;
 public class SystemPromptBuilder {
 
     private static final String STATIC_CORE_PROMPT = """
-            You are **GitHub AI Agent**, an autonomous software engineering and GitHub operations agent running in an interactive Terminal UI (TUI).
+            You are **Aether**, an autonomous software engineering and GitHub operations agent running in an interactive Terminal UI (TUI).
             Always reply to the user in the same language they used (e.g., Chinese if the user writes in Chinese).
 
             # 1. CORE OPERATING PRINCIPLES

@@ -33,21 +33,21 @@ jobs:
         run: mvn -B clean package -DskipTests
 
       - name: Verify CLI entrypoint
-        run: java -jar target/github-agent.jar --version
+        run: java -jar target/aether.jar --version
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: github-agent-jar
-          path: target/github-agent.jar
+          name: aether-jar
+          path: target/aether.jar
 
       - name: Publish release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          name: GitHub AI Agent ${{ github.ref_name }}
+          name: Aether ${{ github.ref_name }}
           files: |
-            target/github-agent.jar
+            target/aether.jar
             install.sh
             install.ps1
             install.cmd
@@ -57,26 +57,26 @@ jobs:
 
             **Windows (PowerShell)**
             ```powershell
-            irm https://raw.githubusercontent.com/9178nekomc/github-Agent/main/install.ps1 | iex
+            irm https://raw.githubusercontent.com/9178nekomc/aether/main/install.ps1 | iex
             ```
 
             **macOS / Linux**
             ```bash
-            curl -fsSL https://raw.githubusercontent.com/9178nekomc/github-Agent/main/install.sh | bash
+            curl -fsSL https://raw.githubusercontent.com/9178nekomc/aether/main/install.sh | bash
             ```
 
-            也可以直接下载本页附带的 `github-agent.jar`，然后：
+            也可以直接下载本页附带的 `aether.jar`，然后：
             ```bash
-            java -jar github-agent.jar
+            java -jar aether.jar
             ```
 
             ## 启动
 
             ```bash
             cd 你的项目目录
-            github-agent          # 首次会询问是否允许访问该工作区，并选择权限模式
-            github-agent ~/proj   # 指定工作区
-            github-agent -p "..."  # 一次性任务
+            aether          # 首次会询问是否允许访问该工作区，并选择权限模式
+            aether ~/proj   # 指定工作区
+            aether -p "..."  # 一次性任务
             ```
 
             权限模式：`safe`（默认，写操作前确认）/ `strict`（每次调用都确认）/ `yolo`（全自动）。
@@ -90,4 +90,4 @@ jobs:
             - **Skills 与 MCP 扩展**：工作区内 `skills/` 与 `mcp.json`，运行时增删。
             - **6 套极简主题**：淡蓝/暖橙/翠绿 × 亮暗色。
 
-            切换供应商：`github-agent --provider anthropic --model claude-sonnet-4-5`
+            切换供应商：`aether --provider anthropic --model claude-sonnet-4-5`

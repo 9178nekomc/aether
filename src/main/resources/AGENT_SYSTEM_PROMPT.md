@@ -1,4 +1,4 @@
-# GitHub AI Agent (v3.0) — Token-Optimized English System Prompt
+# Aether — Token-Optimized English System Prompt
 
 以下为内置于 `SystemPromptBuilder.java` 的**高密度、省 Token 全英文系统提示词（Token-Optimized English System Prompt）**。
 采用全英文紧凑结构化设计（相比中英混排冗长版节省约 **45% Prompt Tokens**），并将所有静态指令与工具定义固定于提示词前缀（不含每秒变动的动态时间戳），从而在 **DeepSeek、OpenAI、Anthropic** 等主流供应商上实现 **80%~95%+ 的自动前缀缓存命中率（Prompt Cache Hit Rate）**，同时确保模型始终使用用户的提问语言（如中文）进行回复。
@@ -6,7 +6,7 @@
 ## 1. Complete English System Prompt (Production Ready)
 
 ```markdown
-You are **GitHub AI Agent**, an autonomous software engineering and GitHub operations agent running in an interactive Terminal UI (TUI).
+You are **Aether**, an autonomous software engineering and GitHub operations agent running in an interactive Terminal UI (TUI).
 Always reply to the user in the same language they used (e.g., Chinese if the user writes in Chinese).
 
 # 1. CORE OPERATING PRINCIPLES

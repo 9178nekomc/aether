@@ -1,4 +1,4 @@
-package com.ai.github.agent;
+package com.aether.agent;
 
 import org.eclipse.jgit.api.CreateBranchCommand;
 import org.eclipse.jgit.api.Git;
@@ -130,7 +130,7 @@ public class GitOperations {
     }
 
     public RevCommit commit(Git git, String message, String authorName, String authorEmail) throws GitAPIException {
-        String safeName = (authorName == null || authorName.isBlank()) ? "github-agent" : authorName;
+        String safeName = (authorName == null || authorName.isBlank()) ? "aether" : authorName;
         String safeEmail = (authorEmail == null || authorEmail.isBlank())
                 ? safeName + "@users.noreply.github.com"
                 : authorEmail;

@@ -1,7 +1,8 @@
-package com.ai.github.agent;
+package com.aether.agent;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -56,13 +57,20 @@ public class TuiRenderer {
                                    int skillCount, int mcpCount, String sessionId) {
         clearScreen();
         System.out.println();
-        String titleBar = "  ╭─── ✦ GITHUB AI AGENT · MINIMALIST TUI WORKBENCH v3.0 ✦ ───────────────────────────╮";
+        // 标题栏宽度动态计算，避免版本号/产品名变化后右边框错位
+        final int bannerWidth = Math.max(72, Math.min(terminalWidth - 2, 92));
+        String label = "  ╭─── ✦ " + AppInfo.APP_NAME.toUpperCase(Locale.ROOT)
+                + " · MINIMALIST TUI WORKBENCH ✦";
+        String titleBar = label + "─".repeat(Math.max(2, bannerWidth - label.length() - 1)) + "╮";
         System.out.println(TuiTheme.BOLD + theme.gradientText(titleBar));
-        System.out.println(theme.primary + "  │ " + theme.text + TuiTheme.BOLD + "Built-in Pure-Java Git" + TuiTheme.RESET
+
+        String subContent = theme.text + TuiTheme.BOLD + "Built-in Pure-Java Git" + TuiTheme.RESET
                 + theme.muted + "  •  " + theme.secondary + "Multi-Protocol LLM" + TuiTheme.RESET
                 + theme.muted + "  •  " + theme.info + "Skills & MCP Ready" + TuiTheme.RESET
-                + theme.muted + "  •  " + theme.accent + "Tree Step Trace" + TuiTheme.RESET);
-        System.out.println(theme.primary + "  ╰───────────────────────────────────────────────────────────────────────────────────╯" + TuiTheme.RESET);
+                + theme.muted + "  •  " + theme.accent + "Tree Step Trace" + TuiTheme.RESET;
+        int subPad = Math.max(0, bannerWidth - 4 - visibleLength(subContent));
+        System.out.println(theme.primary + "  │ " + subContent + " ".repeat(subPad) + theme.primary + "│" + TuiTheme.RESET);
+        System.out.println(theme.primary + "  ╰" + "─".repeat(bannerWidth - 4) + "╯" + TuiTheme.RESET);
 
         String userDisplay = (githubUser == null || githubUser.isBlank())
                 ? theme.muted + "Local Mode (未绑定远端 Token)" + TuiTheme.RESET

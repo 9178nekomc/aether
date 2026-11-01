@@ -1,4 +1,4 @@
-package com.ai.github.agent;
+package com.aether.agent;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -19,7 +19,7 @@ import java.util.Set;
  * 工作区信任记录存储（TrustStore）。
  *
  * 对标 Claude Code 的 "Do you trust the files in this folder?" 机制：
- * 每个被授权的目录会连同「权限模式」一起记录在 ~/.github-agent/trusted-dirs.json 中，
+ * 每个被授权的目录会连同「权限模式」一起记录在 ~/.aether/trusted-dirs.json 中，
  * 之后在该目录再次启动时不再重复询问；换到新目录则会重新询问一次。
  *
  * 文件格式（JSON）：

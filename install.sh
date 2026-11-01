@@ -1,31 +1,31 @@
 #!/usr/bin/env bash
 # ==============================================================================
-#  GitHub AI Agent —— macOS / Linux 安装脚本 (v3.0.1)
+#  Aether —— macOS / Linux 安装脚本
 #
 #  安装后即可在任意目录用一条命令启动：
-#     github-agent            # 在当前目录启动（首次会询问是否允许访问该工作区）
-#     github-agent ~/proj     # 在指定目录启动
-#     gha                     # 短别名
+#     aether            # 在当前目录启动（首次会询问是否允许访问该工作区）
+#     aether ~/proj     # 在指定目录启动
+#     ae                # 短别名（等价于 aether）
 #
 #  用法:
-#     bash install.sh                 # 自动构建/下载并安装
+#     bash install.sh                 # 自动构建 / 下载并安装
 #     bash install.sh --jar a.jar     # 用已构建好的 jar 安装
 #     bash install.sh --uninstall     # 卸载
 #     curl -fsSL .../install.sh | bash
 #
 #  目录布局:
-#     ~/.github-agent/lib/github-agent.jar   程序本体
-#     ~/.github-agent/config.properties      API Key / Token / 主题
-#     ~/.github-agent/trusted-dirs.json      已授权的工作区目录
-#     ~/.local/bin/github-agent              启动器（在 PATH 中）
-#     ~/.local/bin/gha                       短别名
+#     ~/.aether/lib/aether.jar        程序本体
+#     ~/.aether/config.properties     供应商 / 密钥 / Token / 主题 / 权限
+#     ~/.aether/trusted-dirs.json     已授权的工作区目录与权限模式
+#     ~/.local/bin/aether             启动器（在 PATH 中）
+#     ~/.local/bin/ae                 短别名
 # ==============================================================================
 set -euo pipefail
 
-VERSION="3.0.1"
-REPO="9178nekomc/github-Agent"
-ROOT="${GITHUB_AGENT_HOME:-$HOME/.github-agent}"
-BIN_DIR="${GITHUB_AGENT_BIN:-$HOME/.local/bin}"
+VERSION="3.1.0"
+REPO="9178nekomc/aether"
+ROOT="${AETHER_HOME:-$HOME/.aether}"
+BIN_DIR="${AETHER_BIN:-$HOME/.local/bin}"
 JAR_SRC=""
 NO_PATH=0
 UNINSTALL=0
@@ -63,22 +63,22 @@ done
 
 # ---------------------------------------------------------------- 卸载
 if [ "$UNINSTALL" = "1" ]; then
-  printf '\n%s\n' "${BOLD}卸载 GitHub AI Agent${RESET}"
-  for f in "$BIN_DIR/github-agent" "$BIN_DIR/gha"; do
+  printf '\n%s\n' "${BOLD}卸载 Aether${RESET}"
+  for f in "$BIN_DIR/aether" "$BIN_DIR/ae"; do
     if [ -e "$f" ] || [ -L "$f" ]; then rm -f "$f"; ok "已移除 $f"; fi
   done
   if [ "$PURGE" = "1" ]; then
     rm -rf "$ROOT"; ok "已删除配置目录 $ROOT"
   else
-    rm -f "$ROOT/lib/github-agent.jar"
+    rm -f "$ROOT/lib/aether.jar"
     [ -d "$ROOT/lib" ] && rmdir "$ROOT/lib" 2>/dev/null || true
     warn "已保留配置与信任记录: $ROOT（加 --purge 可一并删除）"
   fi
   # 顺手清理 shell rc 里的 PATH 注入
   for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
-    if [ -f "$rc" ] && grep -q '>>> github-agent >>>' "$rc" 2>/dev/null; then
+    if [ -f "$rc" ] && grep -q '>>> aether >>>' "$rc" 2>/dev/null; then
       tmp="$(mktemp)"
-      sed '/# >>> github-agent >>>/,/# <<< github-agent <<</d' "$rc" > "$tmp" && mv "$tmp" "$rc"
+      sed '/# >>> aether >>>/,/# <<< aether <<</d' "$rc" > "$tmp" && mv "$tmp" "$rc"
       ok "已从 $rc 移除 PATH 配置"
     fi
   done
@@ -88,7 +88,7 @@ fi
 
 # ---------------------------------------------------------------- 环境检查
 printf '\n%s\n' "${BOLD}${CYAN}================================================================${RESET}"
-printf '%s\n'  "${BOLD}${CYAN}   GitHub AI Agent  ·  安装程序  v${VERSION}${RESET}"
+printf '%s\n'  "${BOLD}${CYAN}   Aether  ·  安装程序  v${VERSION}${RESET}"
 printf '%s\n'  "${BOLD}${CYAN}================================================================${RESET}"
 
 if ! command -v java >/dev/null 2>&1; then
@@ -106,8 +106,8 @@ ok "Java 环境正常（$(printf '%s' "$RAW_VER" | tr -d '\n')）"
 
 # ---------------------------------------------------------------- 获取 jar
 mkdir -p "$ROOT/lib"
-TARGET_JAR="$ROOT/lib/github-agent.jar"
-TMP_JAR="$(mktemp -t github-agent-XXXXXX.jar)"
+TARGET_JAR="$ROOT/lib/aether.jar"
+TMP_JAR="$(mktemp -t aether-XXXXXX.jar)"
 trap 'rm -f "$TMP_JAR"' EXIT
 
 fetch_jar() {
@@ -117,19 +117,19 @@ fetch_jar() {
     info "使用本地 jar: $JAR_SRC"
     return 0
   fi
-  if [ -f "target/github-agent.jar" ]; then
-    cp "target/github-agent.jar" "$TMP_JAR"
-    info "使用已构建产物: target/github-agent.jar"
+  if [ -f "target/aether.jar" ]; then
+    cp "target/aether.jar" "$TMP_JAR"
+    info "使用已构建产物: target/aether.jar"
     return 0
   fi
   if [ -f "pom.xml" ] && command -v mvn >/dev/null 2>&1; then
     info "检测到源码工程，正在用 Maven 构建（首次会下载依赖，请稍候）..."
     mvn -q -B clean package -DskipTests
-    cp "target/github-agent.jar" "$TMP_JAR"
+    cp "target/aether.jar" "$TMP_JAR"
     ok "构建完成"
     return 0
   fi
-  URL="https://github.com/$REPO/releases/latest/download/github-agent.jar"
+  URL="https://github.com/$REPO/releases/latest/download/aether.jar"
   info "正在下载发行版: $URL"
   if command -v curl >/dev/null 2>&1; then
     curl -fL --progress-bar "$URL" -o "$TMP_JAR"
@@ -148,28 +148,28 @@ ok "程序本体已安装: $TARGET_JAR ($((JAR_SIZE / 1024 / 1024)) MB)"
 
 # ---------------------------------------------------------------- 生成启动器
 mkdir -p "$BIN_DIR"
-LAUNCHER="$BIN_DIR/github-agent"
+LAUNCHER="$BIN_DIR/aether"
 cat > "$LAUNCHER" <<LAUNCHER_EOF
 #!/bin/sh
-# github-agent launcher (generated by installer v${VERSION})
+# aether launcher (generated by installer v${VERSION})
 JAR="$TARGET_JAR"
-if [ -z "\${GITHUB_AGENT_HOME:-}" ]; then GITHUB_AGENT_HOME="$ROOT"; export GITHUB_AGENT_HOME; fi
+if [ -z "\${AETHER_HOME:-}" ]; then AETHER_HOME="$ROOT"; export AETHER_HOME; fi
 if [ -n "\${JAVA_HOME:-}" ] && [ -x "\$JAVA_HOME/bin/java" ]; then
   JAVA_BIN="\$JAVA_HOME/bin/java"
 else
   JAVA_BIN="java"
 fi
 if [ ! -f "\$JAR" ]; then
-  echo "✖ 找不到 github-agent.jar：\$JAR" >&2
+  echo "✖ 找不到 aether.jar：\$JAR" >&2
   echo "  请重新运行安装脚本：bash install.sh" >&2
   exit 127
 fi
 exec "\$JAVA_BIN" -jar "\$JAR" "\$@"
 LAUNCHER_EOF
 chmod 755 "$LAUNCHER"
-ln -sf "$LAUNCHER" "$BIN_DIR/gha" 2>/dev/null || cp "$LAUNCHER" "$BIN_DIR/gha"
-chmod 755 "$BIN_DIR/gha"
-ok "启动器已创建: $LAUNCHER（别名: gha）"
+ln -sf "$LAUNCHER" "$BIN_DIR/ae" 2>/dev/null || cp "$LAUNCHER" "$BIN_DIR/ae"
+chmod 755 "$BIN_DIR/ae"
+ok "启动器已创建: $LAUNCHER（别名: ae）"
 
 # ---------------------------------------------------------------- PATH
 add_to_path() {
@@ -187,11 +187,11 @@ add_to_path() {
     *)    RC="$HOME/.profile" ;;
   esac
   [ -f "$RC" ] || : > "$RC"
-  if ! grep -q '>>> github-agent >>>' "$RC" 2>/dev/null; then
+  if ! grep -q '>>> aether >>>' "$RC" 2>/dev/null; then
     {
-      printf '\n# >>> github-agent >>>\n'
+      printf '\n# >>> aether >>>\n'
       printf 'export PATH="%s:$PATH"\n' "$BIN_DIR"
-      printf '# <<< github-agent <<<\n'
+      printf '# <<< aether <<<\n'
     } >> "$RC"
     ok "已把 $BIN_DIR 写入 $RC"
   fi
@@ -207,20 +207,26 @@ else
   warn "自检未能运行，请手动执行 \"$LAUNCHER\" --version 查看错误"
 fi
 
+# 旧版（github-agent）残留提示：不自动删除，避免误伤用户的旧配置
+LEGACY_BIN="$HOME/.github-agent/bin"
+if [ -d "$LEGACY_BIN" ]; then
+  warn "检测到旧版仍在 $LEGACY_BIN（命令 github-agent / gha）。确认新版可用后可手动删除该目录，避免两个命令并存。"
+fi
+
 cat <<DONE
 
 ${GREEN}${BOLD}安装完成！${RESET}
 
   ${BOLD}下一步：${RESET}
     ${CYAN}cd${RESET} 你的项目目录
-    ${CYAN}github-agent${RESET}        # 启动（首次会询问是否允许访问该工作区，并选择权限模式）
+    ${CYAN}aether${RESET}        # 启动（首次会询问是否允许访问该工作区，并选择权限模式）
 
   ${DIM}常用参数:${RESET}
-    github-agent ~/code/proj          # 指定工作区
-    github-agent -p "重构这个模块"     # 一次性任务
-    github-agent --doctor             # 环境自检
-    github-agent --help               # 全部参数
-    github-agent --forget             # 撤销当前目录授权
+    aether ~/code/proj          # 指定工作区
+    aether -p "重构这个模块"     # 一次性任务
+    aether --doctor             # 环境自检
+    aether --help               # 全部参数
+    aether --forget             # 撤销当前目录授权
 
   ${DIM}配置文件: $ROOT/config.properties${RESET}
   ${DIM}信任记录: $ROOT/trusted-dirs.json${RESET}

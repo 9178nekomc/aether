@@ -1,4 +1,4 @@
-package com.ai.github.agent;
+package com.aether.agent;
 
 import com.fasterxml.jackson.databind.JsonNode;
 
@@ -17,16 +17,16 @@ import java.util.List;
 import java.util.Scanner;
 
 /**
- * GitHub AI Agent v3.0 主程序入口（全局命令形态 + 极简 TUI 工作台）。
+ * Aether v3.0 主程序入口（全局命令形态 + 极简 TUI 工作台）。
  *
  * 安装后即可像 `claude` 一样使用单命令启动：
  *
- *   $ github-agent                 # 在当前目录启动（首次会询问是否允许访问该工作区）
- *   $ github-agent ~/code/proj     # 在指定目录启动
- *   $ github-agent -p "写个脚本"    # 一次性任务模式，执行完退出
- *   $ github-agent --version / --help / --doctor / --config / --forget
+ *   $ aether                 # 在当前目录启动（首次会询问是否允许访问该工作区）
+ *   $ aether ~/code/proj     # 在指定目录启动
+ *   $ aether -p "写个脚本"    # 一次性任务模式，执行完退出
+ *   $ aether --version / --help / --doctor / --config / --forget
  *
- * 启动流程：解析参数 → 加载用户级配置（~/.github-agent）→ 工作区信任授权 →
+ * 启动流程：解析参数 → 加载用户级配置（~/.aether）→ 工作区信任授权 →
  * 首次配置向导（缺 API Key 时）→ 校验 GitHub Token → 进入 TUI 交互循环。
  *
  * v3.0 能力（与 v2.x 启动器层并存）：
@@ -53,6 +53,9 @@ public class Main {
         for (String w : opts.warnings) {
             System.err.println("⚠ 参数提示: " + w + "（用 --help 查看完整用法）");
         }
+
+        // 从旧版目录（~/.github-agent）一次性迁移配置与信任记录（仅在新目录不存在时执行）
+        AppInfo.migrateLegacyHome();
 
         Path workspace = opts.resolveWorkspace();
         if (!Files.isDirectory(workspace)) {
@@ -206,7 +209,7 @@ public class Main {
             if (isDebug()) {
                 e.printStackTrace();
             } else {
-                System.err.println("   （设置环境变量 GITHUB_AGENT_DEBUG=1 可查看完整堆栈）");
+                System.err.println("   （设置环境变量 AETHER_DEBUG=1 可查看完整堆栈）");
             }
             System.exit(1);
         }
@@ -278,7 +281,7 @@ public class Main {
     }
 
     private static boolean isDebug() {
-        String v = System.getenv("GITHUB_AGENT_DEBUG");
+        String v = System.getenv("AETHER_DEBUG");
         return v != null && !v.isBlank() && !v.equals("0");
     }
 

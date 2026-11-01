@@ -1,4 +1,4 @@
-package com.ai.github.agent;
+package com.aether.agent;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -8,7 +8,7 @@ import java.util.List;
 /**
  * 环境自检报告（Doctor）。
  *
- * 由 `github-agent --doctor`（非交互）与会话内 `/doctor` 共用，检查：
+ * 由 `aether --doctor`（非交互）与会话内 `/doctor` 共用，检查：
  * Java 运行时、内置 JGit、工作区可写性、配置文件与信任记录、AI 端点、GitHub 认证状态。
  */
 public final class Doctor {

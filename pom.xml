@@ -4,11 +4,11 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>com.ai.github</groupId>
-    <artifactId>github-agent</artifactId>
-    <version>3.0.1</version>
+    <groupId>com.aether</groupId>
+    <artifactId>aether</artifactId>
+    <version>3.1.0</version>
     <packaging>jar</packaging>
-    <name>GitHub AI Agent v3.0 (Minimalist TUI Workbench)</name>
+    <name>Aether (Minimalist TUI Workbench)</name>
 
     <properties>
         <maven.compiler.source>21</maven.compiler.source>
@@ -47,7 +47,7 @@
     </dependencies>
 
     <build>
-        <finalName>github-agent</finalName>
+        <finalName>aether</finalName>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -58,7 +58,7 @@
                 </configuration>
             </plugin>
 
-            <!-- 打包为零外部依赖的 All-in-One Fat JAR：java -jar target/github-agent.jar -->
+            <!-- 打包为零外部依赖的 All-in-One Fat JAR：java -jar target/aether.jar -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
@@ -72,9 +72,9 @@
                         <configuration>
                             <transformers>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                                    <mainClass>com.ai.github.agent.Main</mainClass>
+                                    <mainClass>com.aether.agent.Main</mainClass>
                                     <manifestEntries>
-                                        <Implementation-Title>GitHub AI Agent</Implementation-Title>
+                                        <Implementation-Title>Aether</Implementation-Title>
                                         <Implementation-Version>${project.version}</Implementation-Version>
                                     </manifestEntries>
                                 </transformer>

@@ -1,4 +1,4 @@
-package com.ai.github.agent;
+package com.aether.agent;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -25,7 +25,7 @@ public class ConfigManager {
     /** 旧版（v2.x 及更早）使用的项目内配置文件，仅用于一次性迁移。 */
     private static final String LEGACY_CONFIG_FILE = "config.properties";
 
-    /** 实际配置文件路径：默认 ~/.github-agent/config.properties，可用 GITHUB_AGENT_HOME 重定向。 */
+    /** 实际配置文件路径：默认 ~/.aether/config.properties，可用 AETHER_HOME 重定向。 */
     private Path configPath = AppInfo.configFile();
 
     private String providerId = "deepseek";
@@ -170,7 +170,10 @@ public class ConfigManager {
         // Step 5/7: 配置 GitHub 凭证与工作目录
         clearTerminalScreen();
         printWizardStepHeader(theme, 5, 7, "GitHub 账号与工作区设置 (GitHub & Workspace)");
-        System.out.println(theme.muted + "  提示: 输入 GitHub Personal Access Token 以启用远端创建仓库/Push/PR/Star（若仅本地使用可直接回车跳过）。\n" + TuiTheme.RESET);
+        System.out.println(theme.muted
+                + "  提示（可选）: 填入 GitHub Personal Access Token 仅用于方便进行 GitHub 管理"
+                + "（建仓 / Push / PR / Issue / Release）；不需要远端功能可直接回车跳过，本地代码编辑与内置 Git 不受影响。\n"
+                + TuiTheme.RESET);
         System.out.print(theme.primary + "  ❯ GitHub Token (ghp_...): " + TuiTheme.RESET);
         String ghTok = scanner.hasNextLine() ? scanner.nextLine().trim() : "";
         if (!ghTok.isEmpty()) {

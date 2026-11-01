@@ -1,4 +1,4 @@
-package com.ai.github.agent;
+package com.aether.agent;
 
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -10,14 +10,14 @@ import java.util.List;
  *
  * 安装后即可像 `claude` 一样使用单命令启动：
  *
- *   github-agent                      # 在当前目录启动（等价于 claude）
- *   github-agent ~/code/my-project    # 在指定目录启动（等价于 claude <dir>）
- *   github-agent -p "重构这个模块"     # 一次性任务模式：执行完直接退出（等价于 claude -p）
- *   github-agent --version / --help / --doctor / --config
- *   github-agent --trust              # 跳过信任询问，直接记住当前目录（CI / 脚本用）
- *   github-agent --mode yolo          # 权限模式：safe | strict | yolo
- *   github-agent --allow-outside      # 允许读写工作区之外的路径（默认阻止）
- *   github-agent --forget             # 撤销当前目录的信任记录
+ *   aether                      # 在当前目录启动（等价于 claude）
+ *   aether ~/code/my-project    # 在指定目录启动（等价于 claude <dir>）
+ *   aether -p "重构这个模块"     # 一次性任务模式：执行完直接退出（等价于 claude -p）
+ *   aether --version / --help / --doctor / --config
+ *   aether --trust              # 跳过信任询问，直接记住当前目录（CI / 脚本用）
+ *   aether --mode yolo          # 权限模式：safe | strict | yolo
+ *   aether --allow-outside      # 允许读写工作区之外的路径（默认阻止）
+ *   aether --forget             # 撤销当前目录的信任记录
  */
 public class CliOptions {
 
@@ -152,7 +152,7 @@ public class CliOptions {
                     } else if (o.workspaceArg == null) {
                         o.workspaceArg = a;
                     } else if (o.prompt == null) {
-                        // 支持 github-agent <dir> "任务描述" 的写法
+                        // 支持 aether <dir> "任务描述" 的写法
                         o.prompt = a;
                     }
                 }
@@ -235,7 +235,7 @@ public class CliOptions {
                 配置与信任记录:
                   配置目录: %s
                   信任记录: %s
-                  可用环境变量 GITHUB_AGENT_HOME 重定向整个配置目录（便携模式）。
+                  可用环境变量 AETHER_HOME 重定向整个配置目录（便携模式）。
                 """.formatted(
                 AppInfo.APP_NAME, v, AppInfo.CODENAME,
                 AppInfo.COMMAND,

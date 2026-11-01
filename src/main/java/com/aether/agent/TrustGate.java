@@ -1,4 +1,4 @@
-package com.ai.github.agent;
+package com.aether.agent;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -8,10 +8,10 @@ import java.util.Scanner;
 /**
  * 工作区信任授权门控（TrustGate）。
  *
- * 首次在某个目录执行 `github-agent` 时，会像 Claude Code 一样先展示一张授权面板：
+ * 首次在某个目录执行 `aether` 时，会像 Claude Code 一样先展示一张授权面板：
  * 明确告知「本程序将能够读写此目录下的文件、执行内置 Git 命令、调用 GitHub API」，
  * 并让用户选择是否允许访问、以及采用哪种权限模式。选择结果会写入
- * ~/.github-agent/trusted-dirs.json，下次在同一目录启动不再重复询问。
+ * ~/.aether/trusted-dirs.json，下次在同一目录启动不再重复询问。
  *
  * 安全性约定：
  * - 未授权目录（含非交互环境无法回答时）一律拒绝启动，退出码 2；
