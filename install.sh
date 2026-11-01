@@ -22,7 +22,7 @@
 # ==============================================================================
 set -euo pipefail
 
-VERSION="3.1.1"
+VERSION="3.1.2"
 REPO="9178nekomc/aether"
 ROOT="${AETHER_HOME:-$HOME/.aether}"
 BIN_DIR="${AETHER_BIN:-$HOME/.local/bin}"

@@ -35,7 +35,7 @@ public final class AppInfo {
     private static final String LEGACY_COMMAND = "github-agent";
 
     /** 兜底版本号；打包后优先从 jar 清单的 Implementation-Version 读取，避免与 pom 不一致。 */
-    private static final String FALLBACK_VERSION = "3.1.1";
+    private static final String FALLBACK_VERSION = "3.1.2";
 
     private AppInfo() {
     }
@@ -108,7 +108,9 @@ public final class AppInfo {
     public static void migrateLegacyHome() {
         try {
             Path target = homeDir();
-            if (Files.exists(target)) {
+            // 注意：安装脚本会先把目标目录建好（bin/ lib/ 等），所以不能用「目录是否存在」判断。
+            // 以「新目录里还没有 config.properties」作为未初始化的标志。
+            if (Files.exists(target.resolve("config.properties"))) {
                 return;
             }
             Path legacy = Paths.get(System.getProperty("user.home", "."), LEGACY_HOME_DIR_NAME)
