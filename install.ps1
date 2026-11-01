@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-    GitHub AI Agent Pro —— Windows 安装脚本 (v2.1.1)
+    GitHub AI Agent Pro —— Windows 安装脚本 (v2.1.2)
 
 .DESCRIPTION
     安装后即可在任意目录（PowerShell / CMD / Windows Terminal）用一条命令启动：
@@ -50,7 +50,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-$ScriptVersion = '2.1.1'
+$ScriptVersion = '2.1.2'
 $Repo = '9178nekomc/github-Agent'
 $ReleaseJarUrl = "https://github.com/$Repo/releases/latest/download/github-agent.jar"
 
@@ -89,6 +89,24 @@ function Set-UserPath([string]$value, $kind) {
     $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
     if (-not $key) { $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment') }
     try { $key.SetValue('Path', $value, $kind) } finally { $key.Close() }
+    Send-EnvironmentChanged
+}
+
+# 写完注册表必须通知系统刷新环境块，否则资源管理器不会更新自己的环境副本，
+# 从开始菜单新开的终端仍读不到新 PATH（表现为"装完命令还是找不到"，要注销才生效）。
+# 实现上不调用 user32!SendMessageTimeout，而是利用 [Environment]::SetEnvironmentVariable
+# 在 User 作用域下的既定行为：写完注册表后会广播 WM_SETTINGCHANGE("Environment")。
+# 这样可以避免 Add-Type 运行时编译——在 ConstrainedLanguage / AppLocker 环境下会被拦截，
+# 而安装脚本恰恰经常在这些受限环境里运行。用临时变量触发广播，随后立即删除，不留残留。
+function Send-EnvironmentChanged {
+    $probe = 'GITHUB_AGENT_ENV_REFRESH'
+    try {
+        [Environment]::SetEnvironmentVariable($probe, '1', 'User')
+    } catch {
+        return
+    } finally {
+        try { [Environment]::SetEnvironmentVariable($probe, $null, 'User') } catch { }
+    }
 }
 
 function Save-PathBackup([string]$raw) {

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-#  GitHub AI Agent Pro —— macOS / Linux 安装脚本 (v2.1.1)
+#  GitHub AI Agent Pro —— macOS / Linux 安装脚本 (v2.1.2)
 #
 #  安装后即可在任意目录用一条命令启动：
 #     github-agent            # 在当前目录启动（首次会询问是否允许访问该工作区）
@@ -22,7 +22,7 @@
 # ==============================================================================
 set -euo pipefail
 
-VERSION="2.1.1"
+VERSION="2.1.2"
 REPO="9178nekomc/github-Agent"
 ROOT="${GITHUB_AGENT_HOME:-$HOME/.github-agent}"
 BIN_DIR="${GITHUB_AGENT_BIN:-$HOME/.local/bin}"
