@@ -2,6 +2,7 @@ package com.ai.github.agent;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import okhttp3.HttpUrl;
 import okhttp3.MediaType;
@@ -13,12 +14,16 @@ import okhttp3.Response;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 /**
- * 基于GitHub官方REST API（https://api.github.com）的客户端封装。
- * 所有操作都通过Personal Access Token鉴权，走官方支持的接口，
- * 不做任何页面模拟/DOM解析，天然遵守GitHub的接口速率限制和使用条款。
+ * 基于 GitHub 官方 REST API（https://api.github.com）的全功能客户端封装。
+ *
+ * v2.0 升级覆盖：
+ * - 账号与社交：获取当前登录用户、查看任意用户资料、关注/取消关注、Star/Unstar 仓库
+ * - 仓库管理：创建仓库（支持公开/私有）、删除仓库、Fork 仓库、列出用户仓库、搜索仓库、读取 README 与任意文件
+ * - 协作与研发流：查询/创建 Issue、发表 Issue/PR 评论、查询/创建 Pull Request (PR)、创建版本 Release、搜索代码 (Code Search)
  */
 public class GitHubApiClient {
 
@@ -30,23 +35,43 @@ public class GitHubApiClient {
     private final ObjectMapper mapper = new ObjectMapper();
 
     public GitHubApiClient(String token) {
-        this.token = token;
+        this.token = token == null ? "" : token.trim();
         this.http = new OkHttpClient.Builder()
                 .connectTimeout(20, TimeUnit.SECONDS)
                 .readTimeout(60, TimeUnit.SECONDS)
                 .build();
     }
 
+    public boolean hasToken() {
+        return token != null && !token.isBlank();
+    }
+
     private Request.Builder baseRequest(String path) {
-        return new Request.Builder()
+        Request.Builder builder = new Request.Builder()
                 .url(API_BASE + path)
-                .addHeader("Authorization", "Bearer " + token)
                 .addHeader("Accept", "application/vnd.github+json")
                 .addHeader("X-GitHub-Api-Version", "2022-11-28");
+        if (hasToken()) {
+            builder.addHeader("Authorization", "Bearer " + token);
+        }
+        return builder;
     }
 
     public JsonNode getAuthenticatedUser() throws IOException {
         Request request = baseRequest("/user").get().build();
+        return execute(request);
+    }
+
+    public JsonNode getUserProfile(String username) throws IOException {
+        Request request = baseRequest("/users/" + username).get().build();
+        return execute(request);
+    }
+
+    public JsonNode listUserRepositories(String username, int perPage) throws IOException {
+        String path = (username == null || username.isBlank())
+                ? "/user/repos?sort=updated&per_page=" + perPage
+                : "/users/" + username + "/repos?sort=updated&per_page=" + perPage;
+        Request request = baseRequest(path).get().build();
         return execute(request);
     }
 
@@ -63,6 +88,13 @@ public class GitHubApiClient {
         return execute(request);
     }
 
+    public JsonNode forkRepository(String owner, String repo) throws IOException {
+        Request request = baseRequest("/repos/" + owner + "/" + repo + "/forks")
+                .post(RequestBody.create("{}", JSON))
+                .build();
+        return execute(request);
+    }
+
     public boolean deleteRepository(String owner, String repo) throws IOException {
         Request request = baseRequest("/repos/" + owner + "/" + repo).delete().build();
         try (Response response = http.newCall(request).execute()) {
@@ -75,8 +107,21 @@ public class GitHubApiClient {
         return execute(request);
     }
 
+    public String getRemoteFileContent(String owner, String repo, String path, String ref) throws IOException {
+        String cleanPath = path.startsWith("/") ? path.substring(1) : path;
+        String urlPath = "/repos/" + owner + "/" + repo + "/contents/" + cleanPath
+                + (ref != null && !ref.isBlank() ? "?ref=" + ref : "");
+        Request request = baseRequest(urlPath).get().build();
+        JsonNode node = execute(request);
+        String contentB64 = node.path("content").asText("").replace("\n", "").replace("\r", "");
+        if (contentB64.isBlank()) {
+            return node.toPrettyString();
+        }
+        return new String(Base64.getDecoder().decode(contentB64), StandardCharsets.UTF_8);
+    }
+
     public JsonNode createOrUpdateFile(String owner, String repo, String path, String message,
-                                        String content, String branch, String existingSha) throws IOException {
+                                       String content, String branch, String existingSha) throws IOException {
         ObjectNode body = mapper.createObjectNode();
         body.put("message", message);
         body.put("content", Base64.getEncoder().encodeToString(content.getBytes(StandardCharsets.UTF_8)));
@@ -140,19 +185,96 @@ public class GitHubApiClient {
     }
 
     public JsonNode searchRepositories(String query, String sort, String order, int perPage) throws IOException {
-        HttpUrl url = HttpUrl.parse(API_BASE + "/search/repositories").newBuilder()
+        HttpUrl.Builder urlBuilder = HttpUrl.parse(API_BASE + "/search/repositories").newBuilder()
                 .addQueryParameter("q", query)
-                .addQueryParameter("sort", sort)
-                .addQueryParameter("order", order)
-                .addQueryParameter("per_page", String.valueOf(perPage))
-                .build();
+                .addQueryParameter("per_page", String.valueOf(Math.max(1, Math.min(perPage, 30))));
+        if (sort != null && !sort.isBlank()) {
+            urlBuilder.addQueryParameter("sort", sort);
+        }
+        if (order != null && !order.isBlank()) {
+            urlBuilder.addQueryParameter("order", order);
+        }
 
-        Request request = new Request.Builder()
-                .url(url)
-                .addHeader("Authorization", "Bearer " + token)
+        Request.Builder reqBuilder = new Request.Builder()
+                .url(urlBuilder.build())
                 .addHeader("Accept", "application/vnd.github+json")
-                .addHeader("X-GitHub-Api-Version", "2022-11-28")
-                .get()
+                .addHeader("X-GitHub-Api-Version", "2022-11-28");
+        if (hasToken()) {
+            reqBuilder.addHeader("Authorization", "Bearer " + token);
+        }
+        return execute(reqBuilder.get().build());
+    }
+
+    public JsonNode searchCode(String query, int perPage) throws IOException {
+        HttpUrl url = HttpUrl.parse(API_BASE + "/search/code").newBuilder()
+                .addQueryParameter("q", query)
+                .addQueryParameter("per_page", String.valueOf(Math.max(1, Math.min(perPage, 20))))
+                .build();
+        Request.Builder reqBuilder = new Request.Builder()
+                .url(url)
+                .addHeader("Accept", "application/vnd.github+json")
+                .addHeader("X-GitHub-Api-Version", "2022-11-28");
+        if (hasToken()) {
+            reqBuilder.addHeader("Authorization", "Bearer " + token);
+        }
+        return execute(reqBuilder.get().build());
+    }
+
+    public JsonNode listIssues(String owner, String repo, String state, int perPage) throws IOException {
+        String st = (state == null || state.isBlank()) ? "open" : state;
+        Request request = baseRequest("/repos/" + owner + "/" + repo + "/issues?state=" + st + "&per_page=" + perPage).get().build();
+        return execute(request);
+    }
+
+    public JsonNode createIssue(String owner, String repo, String title, String body, List<String> labels) throws IOException {
+        ObjectNode payload = mapper.createObjectNode();
+        payload.put("title", title);
+        payload.put("body", body == null ? "" : body);
+        if (labels != null && !labels.isEmpty()) {
+            ArrayNode arr = payload.putArray("labels");
+            labels.forEach(arr::add);
+        }
+        Request request = baseRequest("/repos/" + owner + "/" + repo + "/issues")
+                .post(RequestBody.create(mapper.writeValueAsString(payload), JSON))
+                .build();
+        return execute(request);
+    }
+
+    public JsonNode createIssueComment(String owner, String repo, int issueNumber, String body) throws IOException {
+        ObjectNode payload = mapper.createObjectNode();
+        payload.put("body", body);
+        Request request = baseRequest("/repos/" + owner + "/" + repo + "/issues/" + issueNumber + "/comments")
+                .post(RequestBody.create(mapper.writeValueAsString(payload), JSON))
+                .build();
+        return execute(request);
+    }
+
+    public JsonNode listPullRequests(String owner, String repo, String state, int perPage) throws IOException {
+        String st = (state == null || state.isBlank()) ? "open" : state;
+        Request request = baseRequest("/repos/" + owner + "/" + repo + "/pulls?state=" + st + "&per_page=" + perPage).get().build();
+        return execute(request);
+    }
+
+    public JsonNode createPullRequest(String owner, String repo, String title, String body, String head, String base) throws IOException {
+        ObjectNode payload = mapper.createObjectNode();
+        payload.put("title", title);
+        payload.put("body", body == null ? "" : body);
+        payload.put("head", head);
+        payload.put("base", (base == null || base.isBlank()) ? "main" : base);
+        Request request = baseRequest("/repos/" + owner + "/" + repo + "/pulls")
+                .post(RequestBody.create(mapper.writeValueAsString(payload), JSON))
+                .build();
+        return execute(request);
+    }
+
+    public JsonNode createRelease(String owner, String repo, String tagName, String name, String body, boolean prerelease) throws IOException {
+        ObjectNode payload = mapper.createObjectNode();
+        payload.put("tag_name", tagName);
+        payload.put("name", (name == null || name.isBlank()) ? tagName : name);
+        payload.put("body", body == null ? "" : body);
+        payload.put("prerelease", prerelease);
+        Request request = baseRequest("/repos/" + owner + "/" + repo + "/releases")
+                .post(RequestBody.create(mapper.writeValueAsString(payload), JSON))
                 .build();
         return execute(request);
     }
@@ -162,11 +284,11 @@ public class GitHubApiClient {
         try (Response response = http.newCall(request).execute()) {
             String raw = response.body() != null ? response.body().string() : "";
             if (!response.isSuccessful()) {
-                return "";
+                return "未找到 README (HTTP " + response.code() + ")";
             }
             JsonNode json = mapper.readTree(raw);
             String contentB64 = json.path("content").asText("");
-            String cleaned = contentB64.replace("\n", "");
+            String cleaned = contentB64.replace("\n", "").replace("\r", "");
             if (cleaned.isBlank()) {
                 return "";
             }
@@ -175,9 +297,6 @@ public class GitHubApiClient {
         }
     }
 
-    /**
-     * 供Git over HTTPS推送使用的凭据（与API鉴权共用同一个Token）。
-     */
     public String getTokenForGitOverHttp() {
         return token;
     }
@@ -188,7 +307,7 @@ public class GitHubApiClient {
             if (!response.isSuccessful()) {
                 throw new IOException("GitHub API 调用失败: HTTP " + response.code() + " - " + raw);
             }
-            return mapper.readTree(raw);
+            return raw.isBlank() ? mapper.createObjectNode() : mapper.readTree(raw);
         }
     }
 }

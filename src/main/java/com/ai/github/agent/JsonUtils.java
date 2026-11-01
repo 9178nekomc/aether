@@ -1,20 +1,30 @@
 package com.ai.github.agent;
 
 /**
- * JSON文本清洗工具。
- * AI模型即使被要求"只返回JSON"，也经常会习惯性地包一层Markdown代码块围栏（```json ... ```），
- * 这个工具负责把这层围栏干净地剥掉，避免JSON解析失败。
+ * JSON 与模型输出文本清洗工具（v2.0 增强版）。
+ *
+ * 支持：
+ * 1. 自动剥离 DeepSeek-R1 / QwQ 等推理模型的 `<think>...</think>` 思维链标签
+ * 2. 自动剥离 Markdown 代码块围栏（```json ... ```）
+ * 3. 从夹杂前后缀说明的文本中精准提取最外层 `{ ... }` JSON 对象
  */
 public final class JsonUtils {
 
     private JsonUtils() {
     }
 
+    public static String stripThinkTags(String text) {
+        if (text == null) {
+            return "";
+        }
+        return text.replaceAll("(?s)<think>.*?</think>", "").trim();
+    }
+
     public static String stripCodeFences(String text) {
         if (text == null) {
             return "";
         }
-        String t = text.trim();
+        String t = stripThinkTags(text).trim();
 
         if (t.startsWith("```")) {
             int firstNewline = t.indexOf('\n');
@@ -30,5 +40,18 @@ public final class JsonUtils {
         }
 
         return t.trim();
+    }
+
+    /**
+     * 从模型输出中提取首个完整的 `{ ... }` JSON 对象文本。
+     */
+    public static String extractJsonObject(String raw) {
+        String cleaned = stripCodeFences(raw);
+        int firstBrace = cleaned.indexOf('{');
+        int lastBrace = cleaned.lastIndexOf('}');
+        if (firstBrace != -1 && lastBrace != -1 && lastBrace > firstBrace) {
+            return cleaned.substring(firstBrace, lastBrace + 1).trim();
+        }
+        return cleaned;
     }
 }
